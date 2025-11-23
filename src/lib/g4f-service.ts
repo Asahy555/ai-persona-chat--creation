@@ -40,22 +40,28 @@ export interface G4FConfig {
 
 /**
  * Список бесплатных эндпоинтов для текста (в порядке приоритета)
+ * Обновлено с рабочими моделями для каждого провайдера
  */
 const TEXT_ENDPOINTS = [
   {
-    name: 'g4f-groq',
-    url: 'https://g4f.dev/api/groq',
-    model: 'mixtral-8x7b',
+    name: 'pollinations-text',
+    url: 'https://text.pollinations.ai/openai',
+    model: 'openai',
   },
   {
-    name: 'g4f-oss',
-    url: 'https://g4f.dev/api/gpt-oss-120b',
-    model: 'gpt-oss-120b',
+    name: 'g4f-pollinations',
+    url: 'https://g4f.dev/api/pollinations.ai/v1/chat/completions',
+    model: 'openai',
   },
   {
-    name: 'g4f-host',
+    name: 'g4f-main',
     url: 'https://host.g4f.dev/v1/chat/completions',
-    model: 'gpt-4.1',
+    model: 'gpt-4o-mini',
+  },
+  {
+    name: 'g4f-groq',
+    url: 'https://g4f.dev/api/groq/v1/chat/completions',
+    model: 'llama-3.1-70b',
   },
 ];
 
@@ -64,9 +70,15 @@ const TEXT_ENDPOINTS = [
  */
 const IMAGE_ENDPOINTS = [
   {
-    name: 'pollinations',
+    name: 'pollinations-direct',
     url: 'https://image.pollinations.ai/prompt',
     direct: true, // прямой URL генерации
+  },
+  {
+    name: 'g4f-pollinations',
+    url: 'https://g4f.dev/api/pollinations.ai/v1/images/generations',
+    model: 'flux',
+    direct: false,
   },
   {
     name: 'g4f-host',
@@ -90,20 +102,22 @@ export async function generateTextG4F(
     try {
       console.log(`🤖 G4F: Trying ${endpoint.name}...`);
 
-      const isStandardFormat = endpoint.url.includes('/chat/completions');
+      // Формируем полный промпт из всех сообщений
+      const systemMessage = messages.find(m => m.role === 'system');
+      const userMessages = messages.filter(m => m.role === 'user' || m.role === 'assistant');
       
-      const requestBody = isStandardFormat
-        ? {
-            model: endpoint.model,
-            messages,
-            temperature: 0.9,
-            max_tokens: 2000,
-            stream: false,
-          }
-        : {
-            prompt: messages.map(m => `${m.role}: ${m.content}`).join('\n') + '\nassistant:',
-            model: endpoint.model,
-          };
+      let fullPrompt = '';
+      if (systemMessage) {
+        fullPrompt += systemMessage.content + '\n\n';
+      }
+      fullPrompt += userMessages.map(m => m.content).join('\n');
+
+      const requestBody = {
+        messages: [{ role: 'user', content: fullPrompt }],
+        model: endpoint.model, // ВАЖНО: используем только модель эндпоинта
+        max_tokens: 2048,
+        // НЕ ИСПОЛЬЗУЕМ temperature для pollinations - они не поддерживают
+      };
 
       const response = await fetch(endpoint.url, {
         method: 'POST',
@@ -111,38 +125,56 @@ export async function generateTextG4F(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(30000), // 30 second timeout
+        signal: AbortSignal.timeout(45000),
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        console.log(`❌ ${endpoint.name} HTTP ${response.status}: ${errorText.substring(0, 150)}`);
+        
+        // Если rate limit (429), ждём немного и пробуем следующий
+        if (response.status === 429) {
+          console.log(`⏳ Rate limited, will try next endpoint...`);
+        }
+        
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const data = await response.json();
-
-      // Парсим ответ в зависимости от формата
+      // Пытаемся распарсить как JSON
+      const contentType = response.headers.get('content-type');
       let content: string;
-      if (data.choices && data.choices[0]?.message?.content) {
-        // OpenAI-compatible format
-        content = data.choices[0].message.content;
-      } else if (data.response) {
-        // Simple response format
-        content = data.response;
-      } else if (typeof data === 'string') {
-        content = data;
-      } else if (data.text) {
-        content = data.text;
+
+      if (contentType?.includes('application/json')) {
+        const data = await response.json();
+        
+        // OpenAI-compatible формат
+        if (data.choices && data.choices[0]?.message?.content) {
+          content = data.choices[0].message.content;
+        } else if (data.response) {
+          content = data.response;
+        } else if (data.text) {
+          content = data.text;
+        } else if (typeof data === 'string') {
+          content = data;
+        } else {
+          console.log('❌ Unknown JSON response format:', JSON.stringify(data).substring(0, 200));
+          throw new Error('Unknown response format');
+        }
       } else {
-        throw new Error('Unknown response format');
+        // Текстовый ответ
+        content = await response.text();
       }
 
-      console.log(`✅ G4F: Text generated successfully via ${endpoint.name}`);
+      if (!content || content.length < 10) {
+        throw new Error('Empty or invalid response');
+      }
+
+      console.log(`✅ G4F: Text generated successfully via ${endpoint.name} (${content.length} chars)`);
 
       return {
-        content,
+        content: content.trim(),
         model: endpoint.model,
         provider: endpoint.name,
-        usage: data.usage,
       };
     } catch (error: any) {
       console.log(`❌ ${endpoint.name} failed:`, error.message);
@@ -172,25 +204,15 @@ export async function generateImageG4F(
       console.log(`🎨 G4F: Trying ${endpoint.name} for image generation...`);
 
       if (endpoint.direct) {
-        // Прямой URL (например, Pollinations)
+        // Прямой URL (Pollinations - самый надежный)
         const encodedPrompt = encodeURIComponent(prompt);
-        const imageUrl = `${endpoint.url}/${encodedPrompt}?width=1024&height=1024&nologo=true`;
+        const imageUrl = `${endpoint.url}/${encodedPrompt}?width=1024&height=1024&nologo=true&model=flux&seed=${Date.now()}`;
         
-        // Проверяем доступность
-        const testResponse = await fetch(imageUrl, {
-          method: 'HEAD',
-          signal: AbortSignal.timeout(10000),
-        });
-
-        if (!testResponse.ok) {
-          throw new Error(`HTTP ${testResponse.status}`);
-        }
-
-        console.log(`✅ G4F: Image generated successfully via ${endpoint.name}`);
+        console.log(`✅ G4F: Image URL generated via ${endpoint.name}`);
 
         return {
           url: imageUrl,
-          model: 'pollinations',
+          model: 'flux',
           provider: endpoint.name,
         };
       } else {
@@ -201,21 +223,25 @@ export async function generateImageG4F(
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: endpoint.model || 'flux',
+            model: config.imageModel || endpoint.model || 'flux',
             prompt,
+            n: 1,
             size: '1024x1024',
             response_format: 'url',
           }),
-          signal: AbortSignal.timeout(60000), // 60 seconds for image generation
+          signal: AbortSignal.timeout(90000), // 90 seconds for image generation
         });
 
         if (!response.ok) {
+          const errorText = await response.text();
+          console.log(`❌ ${endpoint.name} HTTP ${response.status}: ${errorText}`);
           throw new Error(`HTTP ${response.status}`);
         }
 
         const data = await response.json();
 
         if (!data.data || !data.data[0]?.url) {
+          console.log('❌ Invalid image response format:', JSON.stringify(data).substring(0, 200));
           throw new Error('Invalid response format');
         }
 
@@ -247,7 +273,7 @@ export async function checkG4FAvailable(baseUrl: string = 'https://host.g4f.dev/
   try {
     const response = await fetch(`${baseUrl}/models`, {
       method: 'GET',
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(10000),
     });
     return response.ok;
   } catch (error) {
@@ -264,9 +290,8 @@ export async function getG4FModels(config: G4FConfig = {}): Promise<any[]> {
   
   try {
     const response = await fetch(`${baseUrl}/models`, {
-      headers: {
-        ...(config.apiKey && { 'Authorization': `Bearer ${config.apiKey}` }),
-      },
+      method: 'GET',
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {

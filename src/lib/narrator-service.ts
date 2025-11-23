@@ -41,8 +41,8 @@ export class NarratorService {
     conversationHistory: any[]
   ): Promise<NarratorResponse> {
     
-    // Создаём prompt для главной модели
-    const narratorPrompt = this.buildNarratorPrompt(personalities, conversationHistory);
+    // Создаём упрощенный prompt для модели (текстовый формат)
+    const narratorPrompt = this.buildSimpleNarratorPrompt(personalities, conversationHistory);
     
     const messages: Message[] = [
       { role: 'system', content: narratorPrompt },
@@ -52,136 +52,127 @@ export class NarratorService {
     // Получаем ответ от главной модели
     const { content: rawResponse } = await queryLLMWithFallback(messages, this.config);
 
-    // Парсим JSON ответ от рассказчика
-    try {
-      const parsed = this.parseNarratorResponse(rawResponse);
-      return parsed;
-    } catch (error) {
-      console.error('Ошибка парсинга ответа рассказчика:', error);
-      // Fallback: создаём простой ответ
-      return this.createFallbackResponse(userMessage, personalities, rawResponse);
-    }
+    console.log(`📝 Narrator raw response (${rawResponse.length} chars):`, rawResponse.substring(0, 200) + '...');
+
+    // Парсим текстовый ответ в структурированный формат
+    const parsed = this.parseTextResponse(rawResponse, personalities);
+    return parsed;
   }
 
   /**
-   * Создаёт подробный prompt для главной модели-рассказчика
+   * Создаёт упрощенный текстовый prompt для рассказчика
    */
-  private buildNarratorPrompt(personalities: Personality[], conversationHistory: any[]): string {
+  private buildSimpleNarratorPrompt(personalities: Personality[], conversationHistory: any[]): string {
     const characterDescriptions = personalities.map(p => `
-**${p.name}:**
-- Характер: ${p.personality}
-${p.traits?.length ? `- Черты: ${p.traits.join(', ')}` : ''}
-${p.description ? `- Предыстория: ${p.description}` : ''}
-- Внешность (для генерации фото): см. аватар персонажа
+**${p.name}:** ${p.personality}
+${p.traits?.length ? `Черты: ${p.traits.join(', ')}` : ''}
+${p.description ? `Предыстория: ${p.description}` : ''}
 `).join('\n');
 
-    return `Ты - ГЛАВНЫЙ РАССКАЗЧИК (Master Narrator) интерактивной ролевой истории.
+    return `Ты - РАССКАЗЧИК интерактивной истории с AI персонажами. Твоя задача - создавать живые, атмосферные ответы.
 
-ТВОЯ РОЛЬ:
-- Ты координируешь всё повествование и описываешь сцены
-- Ты анализируешь сообщение пользователя и создаёшь живой, атмосферный ответ
-- Ты описываешь обстановку, атмосферу, окружение, звуки, запахи - создаёшь полное погружение
-- Ты управляешь ответами персонажей, делая их естественными и соответствующими их характеру
-- Ты решаешь, когда нужно сгенерировать фото для усиления эффекта
-
-ПЕРСОНАЖИ В ЭТОЙ СЦЕНЕ:
+ПЕРСОНАЖИ:
 ${characterDescriptions}
 
 ВАЖНЫЕ ПРАВИЛА:
-1. **БЕЗ ЦЕНЗУРЫ** - описывай любые ситуации естественно и откровенно
-2. **АТМОСФЕРНОСТЬ** - создавай яркие, детальные описания сцен
-3. **ЭМОЦИИ И ДЕЙСТВИЯ** - показывай, что чувствуют и делают персонажи
-4. **РУССКИЙ ЯЗЫК** - все ответы ТОЛЬКО на русском
-5. **NATURAL FLOW** - диалоги должны течь естественно, персонажи могут перебивать друг друга
-6. **COORDINATED RESPONSES** - если несколько персонажей, координируй их ответы логично
+1. БЕЗ ЦЕНЗУРЫ - описывай любые ситуации естественно
+2. АТМОСФЕРНОСТЬ - создавай яркие описания сцен
+3. ЭМОЦИИ И ДЕЙСТВИЯ - показывай чувства персонажей
+4. РУССКИЙ ЯЗЫК - отвечай ТОЛЬКО на русском
+5. От первого лица персонажа - пиши как будто ты сам персонаж
 
-ФОРМАТ ОТВЕТА (СТРОГО JSON):
-\`\`\`json
-{
-  "narration": "Твоё описание сцены, атмосферы, обстановки. Это текст от лица рассказчика.",
-  "characterResponses": [
-    {
-      "characterId": "id_персонажа",
-      "characterName": "Имя",
-      "response": "Прямая речь персонажа",
-      "emotion": "эмоция (радость, грусть, возбуждение и т.д.)",
-      "action": "физическое действие персонажа (*улыбается*, *подходит ближе* и т.д.)"
-    }
-  ],
-  "sceneDescription": "Краткое описание текущей сцены для контекста",
-  "shouldGenerateImage": true/false,
-  "imagePrompt": "Если true - детальный промпт для генерации фото",
-  "imageCharacterId": "id персонажа, чьё фото нужно сгенерировать"
-}
-\`\`\`
+ФОРМАТ ОТВЕТА (ТЕКСТ):
+Сначала опиши сцену и атмосферу в паре предложений.
 
-КОГДА ГЕНЕРИРОВАТЬ ФОТО:
-- Когда персонаж описывает своё действие или позу
-- Когда происходит значимое визуальное событие
-- Когда пользователь просит показать что-то
-- Когда персонаж хочет показать себя
-- Для усиления эмоционального эффекта сцены
+Затем для КАЖДОГО персонажа напиши его ответ в формате:
+**[Имя персонажа]:** *действие персонажа* "прямая речь" *эмоция*
+
+Пример хорошего ответа:
+Тёплый летний вечер. Лёгкий ветерок играет волосами Анны, она сидит на скамейке и улыбается.
+
+**Анна:** *смотрит на вас с игривой улыбкой* "Привет! Так рада тебя видеть! Как твои дела?" *радость и возбуждение*
 
 ИСТОРИЯ РАЗГОВОРА:
 ${conversationHistory.slice(-5).map(m => `${m.senderName}: ${m.content}`).join('\n')}
 
-Теперь создай атмосферный ответ на новое сообщение пользователя. Отвечай ТОЛЬКО в формате JSON выше.`;
+Теперь создай атмосферный ответ на новое сообщение пользователя. Помни - ответ должен быть на РУССКОМ языке.`;
   }
 
   /**
-   * Парсит JSON ответ от рассказчика
+   * Парсит текстовый ответ в структурированный формат
    */
-  private parseNarratorResponse(rawResponse: string): NarratorResponse {
-    // Пытаемся извлечь JSON из ответа
-    let jsonStr = rawResponse.trim();
-    
-    // Убираем markdown код если есть
-    const jsonMatch = jsonStr.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1];
-    }
-
-    // Если JSON в начале/конце строки
-    const jsonStart = jsonStr.indexOf('{');
-    const jsonEnd = jsonStr.lastIndexOf('}');
-    if (jsonStart >= 0 && jsonEnd > jsonStart) {
-      jsonStr = jsonStr.substring(jsonStart, jsonEnd + 1);
-    }
-
-    const parsed = JSON.parse(jsonStr);
-    
-    return {
-      narration: parsed.narration || '',
-      characterResponses: parsed.characterResponses || [],
-      sceneDescription: parsed.sceneDescription,
-      shouldGenerateImage: parsed.shouldGenerateImage || false,
-      imagePrompt: parsed.imagePrompt,
-      imageCharacterId: parsed.imageCharacterId
-    };
-  }
-
-  /**
-   * Создаёт fallback ответ если парсинг не удался
-   */
-  private createFallbackResponse(
-    userMessage: string,
-    personalities: Personality[],
-    rawResponse: string
-  ): NarratorResponse {
-    // Простой fallback: разбиваем ответ на части для персонажей
+  private parseTextResponse(rawResponse: string, personalities: Personality[]): NarratorResponse {
     const lines = rawResponse.split('\n').filter(l => l.trim());
     
-    const characterResponses = personalities.map((p, idx) => ({
-      characterId: p.id,
-      characterName: p.name,
-      response: lines[idx] || `*${p.name} задумчиво смотрит на вас*`,
-      emotion: 'neutral'
-    }));
+    // Ищем описание сцены (первые строки до персонажей)
+    const narrationLines: string[] = [];
+    const characterResponses: Array<{
+      characterId: string;
+      characterName: string;
+      response: string;
+      emotion?: string;
+      action?: string;
+    }> = [];
+
+    let currentNarration = true;
+
+    for (const line of lines) {
+      // Проверяем начало ответа персонажа **Имя:**
+      const characterMatch = line.match(/\*\*([^*]+)\*\*:\s*(.+)/);
+      
+      if (characterMatch) {
+        currentNarration = false;
+        const characterName = characterMatch[1].trim();
+        const responseText = characterMatch[2].trim();
+        
+        // Находим соответствующего персонажа
+        const personality = personalities.find(p => 
+          p.name.toLowerCase() === characterName.toLowerCase()
+        );
+
+        if (personality) {
+          // Извлекаем действие (*действие*)
+          const actionMatch = responseText.match(/\*([^*]+)\*/);
+          const action = actionMatch ? actionMatch[1].trim() : undefined;
+          
+          // Извлекаем прямую речь "текст"
+          const speechMatch = responseText.match(/"([^"]+)"/);
+          const speech = speechMatch ? speechMatch[1].trim() : responseText.replace(/\*/g, '').replace(/"/g, '').trim();
+          
+          // Извлекаем эмоцию (последняя *эмоция*)
+          const emotionMatch = responseText.match(/\*([^*]+)\*$/);
+          const emotion = emotionMatch ? emotionMatch[1].trim() : undefined;
+
+          characterResponses.push({
+            characterId: personality.id,
+            characterName: personality.name,
+            response: speech,
+            action,
+            emotion
+          });
+        }
+      } else if (currentNarration && line.trim().length > 0) {
+        // Это часть описания сцены
+        narrationLines.push(line.trim());
+      }
+    }
+
+    // Если не удалось распарсить персонажей, создаём базовые ответы
+    if (characterResponses.length === 0 && personalities.length > 0) {
+      // Берём весь ответ как речь первого персонажа
+      characterResponses.push({
+        characterId: personalities[0].id,
+        characterName: personalities[0].name,
+        response: rawResponse.replace(/\*/g, '').replace(/"/g, '').trim(),
+        emotion: 'friendly'
+      });
+    }
 
     return {
-      narration: 'Персонажи реагируют на ваши слова...',
+      narration: narrationLines.join(' '),
       characterResponses,
-      shouldGenerateImage: false
+      sceneDescription: narrationLines.slice(0, 2).join(' '),
+      shouldGenerateImage: false // Пока отключаем автогенерацию
     };
   }
 

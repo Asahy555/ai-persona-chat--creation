@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { generateImageG4F } from '@/lib/g4f-service';
 
 export async function POST(request: Request) {
   try {
@@ -11,36 +12,25 @@ export async function POST(request: Request) {
       );
     }
 
-    // Call the image generation API
-    const response = await fetch(
-      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/internal/generate-image`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          negative_prompt: '',
-          aspect_ratio: aspectRatio,
-        }),
-      }
-    );
+    console.log(`🎨 Generating image with g4f: "${prompt.substring(0, 100)}..."`);
 
-    const data = await response.text();
-    
-    if (!response.ok) {
-      throw new Error(data || 'Failed to generate image');
-    }
+    // Используем g4f для генерации изображений
+    const result = await generateImageG4F(prompt);
 
-    // The response should be a URL
-    const url = data.trim();
+    console.log(`✅ Image generated successfully: ${result.url}`);
 
-    return NextResponse.json({ url });
+    return NextResponse.json({ 
+      url: result.url,
+      model: result.model,
+      provider: result.provider
+    });
   } catch (error) {
-    console.error('Error in generate-image route:', error);
+    console.error('❌ Error in generate-image route:', error);
     return NextResponse.json(
-      { error: 'Failed to generate image' },
+      { 
+        error: 'Failed to generate image', 
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
       { status: 500 }
     );
   }
