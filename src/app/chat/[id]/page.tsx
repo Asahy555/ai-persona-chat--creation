@@ -95,10 +95,10 @@ export default function ChatPage() {
       const data = await response.json();
       const narratorResponse = data.narratorResponse;
 
-      // 1. Добавляем описание рассказчика (невидимый голос за кадром)
+      // 1. Добавляем начальное описание рассказчика (если есть)
       if (narratorResponse.narratorVoice) {
         const narratorMessage: Message = {
-          id: `${Date.now()}-narrator`,
+          id: `${Date.now()}-narrator-opening`,
           senderId: 'narrator',
           senderName: '',
           content: narratorResponse.narratorVoice,
@@ -116,11 +116,33 @@ export default function ChatPage() {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
-      // 2. Добавляем ответы персонажей (только слова)
+      // 2. Добавляем ответы персонажей с описаниями рассказчика
       for (const charResponse of narratorResponse.characterResponses) {
         const personality = personalities.find(p => p.id === charResponse.characterId);
         if (!personality) continue;
 
+        // 2a. Рассказчик описывает действия ПЕРЕД словами персонажа
+        if (charResponse.narratorBefore) {
+          const narratorBeforeMessage: Message = {
+            id: `${Date.now()}-narrator-before-${charResponse.characterId}-${Math.random()}`,
+            senderId: 'narrator',
+            senderName: '',
+            content: charResponse.narratorBefore,
+            timestamp: new Date().toISOString(),
+          };
+
+          currentChat = {
+            ...currentChat,
+            messages: [...currentChat.messages, narratorBeforeMessage],
+            lastMessageAt: narratorBeforeMessage.timestamp,
+          };
+
+          setChat(currentChat);
+          storage.saveChat(currentChat);
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        // 2b. Слова персонажа
         const characterMessage: Message = {
           id: `${Date.now()}-${charResponse.characterId}-${Math.random()}`,
           senderId: charResponse.characterId,
@@ -137,7 +159,28 @@ export default function ChatPage() {
 
         setChat(currentChat);
         storage.saveChat(currentChat);
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 400));
+
+        // 2c. Рассказчик описывает действия ПОСЛЕ слов персонажа
+        if (charResponse.narratorAfter) {
+          const narratorAfterMessage: Message = {
+            id: `${Date.now()}-narrator-after-${charResponse.characterId}-${Math.random()}`,
+            senderId: 'narrator',
+            senderName: '',
+            content: charResponse.narratorAfter,
+            timestamp: new Date().toISOString(),
+          };
+
+          currentChat = {
+            ...currentChat,
+            messages: [...currentChat.messages, narratorAfterMessage],
+            lastMessageAt: narratorAfterMessage.timestamp,
+          };
+
+          setChat(currentChat);
+          storage.saveChat(currentChat);
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
       }
 
       // 3. Генерируем изображение если рассказчик решил
@@ -151,7 +194,7 @@ export default function ChatPage() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 prompt: narratorResponse.imagePrompt,
-                negativePrompt: 'low quality, blurry, distorted',
+                negativePrompt: 'low quality, blurry, distorted, deformed',
                 width: 512,
                 height: 512,
                 apiConfig,

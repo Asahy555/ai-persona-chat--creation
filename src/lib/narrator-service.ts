@@ -13,6 +13,8 @@ interface NarratorResponse {
     characterName: string;
     response: string; // Только слова персонажа
     emotion?: string;
+    narratorBefore?: string; // Рассказчик ПЕРЕД ответом персонажа
+    narratorAfter?: string; // Рассказчик ПОСЛЕ ответа персонажа
   }>;
   shouldGenerateImage?: boolean;
   imagePrompt?: string;
@@ -23,9 +25,10 @@ interface NarratorResponse {
  * АРХИТЕКТУРА: Естественное живое общение
  * 
  * - Рассказчик - невидимый голос за кадром (описывает атмосферу и действия ВСЕХ персонажей)
+ * - Рассказчик появляется В ЛЮБОЙ МОМЕНТ где нужен (не только в начале)
  * - Каждый персонаж - живой человек (свой LLM вызов, говорит только слова)
  * - Персонажи общаются естественно друг с другом и с пользователем
- * - Нет очередности - как в реальной беседе
+ * - Автоматическая генерация фото после каждого обмена репликами
  */
 export class NarratorService {
   private config: LLMConfig;
@@ -45,7 +48,14 @@ export class NarratorService {
     
     const characterResponses: NarratorResponse['characterResponses'] = [];
     
-    // Шаг 1: Каждый персонаж независимо решает - отвечать ли ему и генерирует свой ответ
+    // Шаг 1: Рассказчик описывает начальную атмосферу (если нужно)
+    const openingNarration = await this.generateOpeningNarration(
+      userMessage,
+      personalities,
+      conversationHistory
+    );
+
+    // Шаг 2: Каждый персонаж независимо решает - отвечать ли ему и генерирует свой ответ
     for (const personality of personalities) {
       const shouldRespond = await this.shouldCharacterRespond(
         personality,
@@ -66,7 +76,19 @@ export class NarratorService {
           personalities
         );
         
-        characterResponses.push(response);
+        // Рассказчик описывает действия персонажа ДО/ПОСЛЕ его слов
+        const { narratorBefore, narratorAfter } = await this.generateCharacterNarration(
+          personality,
+          response.response,
+          userMessage,
+          conversationHistory
+        );
+
+        characterResponses.push({
+          ...response,
+          narratorBefore,
+          narratorAfter
+        });
         
         // Небольшая задержка для естественности
         await new Promise(resolve => setTimeout(resolve, 200));
@@ -75,51 +97,56 @@ export class NarratorService {
       }
     }
 
-    // Шаг 2: Рассказчик (невидимый голос) описывает всю сцену и действия персонажей
-    const narratorVoice = await this.generateNarratorDescription(
-      userMessage,
-      personalities,
-      conversationHistory,
-      characterResponses
-    );
+    // Шаг 3: Определяем нужно ли генерировать фото
+    const shouldGenerateImage = characterResponses.length > 0 && Math.random() > 0.3; // 70% шанс
+    let imagePrompt: string | undefined;
+    let imageCharacterId: string | undefined;
+
+    if (shouldGenerateImage && characterResponses.length > 0) {
+      // Выбираем случайного персонажа для фото
+      const randomResponse = characterResponses[Math.floor(Math.random() * characterResponses.length)];
+      const personality = personalities.find(p => p.id === randomResponse.characterId);
+      
+      if (personality) {
+        imageCharacterId = personality.id;
+        imagePrompt = await this.generateImagePrompt(
+          personality,
+          userMessage,
+          randomResponse.response,
+          conversationHistory
+        );
+      }
+    }
 
     return {
-      narratorVoice,
+      narratorVoice: openingNarration,
       characterResponses,
-      shouldGenerateImage: false
+      shouldGenerateImage,
+      imagePrompt,
+      imageCharacterId
     };
   }
 
   /**
-   * Рассказчик описывает сцену и действия ВСЕХ персонажей (невидимый голос за кадром)
+   * Рассказчик описывает начальную атмосферу (если нужно)
    */
-  private async generateNarratorDescription(
+  private async generateOpeningNarration(
     userMessage: string,
     personalities: Personality[],
-    conversationHistory: any[],
-    characterResponses: any[]
+    conversationHistory: any[]
   ): Promise<string | undefined> {
     
-    if (characterResponses.length === 0) {
-      return undefined; // Никто не ответил - рассказчику нечего описывать
+    // Рассказчик появляется только иногда в начале (30% шанс)
+    if (Math.random() > 0.3) {
+      return undefined;
     }
 
-    // Формируем контекст для рассказчика
-    const recentHistory = conversationHistory.slice(-6).map(m => {
+    const recentHistory = conversationHistory.slice(-4).map(m => {
       const sender = m.senderId === 'user' ? 'Пользователь' : m.senderName;
       return `${sender}: ${m.content}`;
     }).join('\n');
 
-    const responsesSummary = characterResponses.map(r => 
-      `${r.characterName} говорит: "${r.response}"`
-    ).join('\n');
-
     const prompt = `Ты - невидимый рассказчик (голос за кадром). Ты НЕ участник разговора.
-
-Твоя задача:
-1. Опиши атмосферу и обстановку
-2. Опиши ДЕЙСТВИЯ каждого персонажа (жесты, мимику, движения)
-3. Передай эмоции сцены
 
 ПЕРСОНАЖИ:
 ${personalities.map(p => `${p.name}: ${p.personality}`).join('\n')}
@@ -127,17 +154,13 @@ ${personalities.map(p => `${p.name}: ${p.personality}`).join('\n')}
 НЕДАВНИЕ СОБЫТИЯ:
 ${recentHistory}
 
-НОВОЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:
+НОВОЕ СООБЩЕНИЕ:
 ${userMessage}
 
-ОТВЕТЫ ПЕРСОНАЖЕЙ:
-${responsesSummary}
+Опиши атмосферу и настроение ПЕРЕД тем как персонажи ответят. 
+1-2 предложения. Пиши на РУССКОМ языке от третьего лица.
 
-Напиши описание от третьего лица (он/она/они). Опиши действия и атмосферу. 
-НЕ повторяй слова персонажей - только их действия, жесты, эмоции, обстановку.
-Пиши на РУССКОМ языке, 2-4 предложения.
-
-Пример: "Комната наполнилась напряжением. Анна нервно кусает губу, её взгляд блуждает по комнате. Дмитрий скрещивает руки на груди, его брови нахмурены."`;
+Пример: "В комнате повисла тишина. Все замерли в ожидании."`;
 
     try {
       const { content } = await queryLLMWithFallback(
@@ -147,8 +170,110 @@ ${responsesSummary}
       
       return content.trim();
     } catch (error) {
-      console.log('⚠️ Рассказчик недоступен');
       return undefined;
+    }
+  }
+
+  /**
+   * Рассказчик описывает действия персонажа ДО и ПОСЛЕ его слов
+   */
+  private async generateCharacterNarration(
+    personality: Personality,
+    characterResponse: string,
+    userMessage: string,
+    conversationHistory: any[]
+  ): Promise<{ narratorBefore?: string; narratorAfter?: string }> {
+    
+    // Рассказчик появляется в 60% случаев
+    if (Math.random() > 0.6) {
+      return {};
+    }
+
+    const recentHistory = conversationHistory.slice(-3).map(m => {
+      const sender = m.senderId === 'user' ? 'Пользователь' : m.senderName;
+      return `${sender}: ${m.content}`;
+    }).join('\n');
+
+    const prompt = `Ты - невидимый рассказчик (голос за кадром).
+
+ПЕРСОНАЖ: ${personality.name} (${personality.personality})
+
+КОНТЕКСТ:
+${recentHistory}
+
+СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ: ${userMessage}
+
+ОТВЕТ ПЕРСОНАЖА: "${characterResponse}"
+
+Опиши ДЕЙСТВИЯ ${personality.name} (жесты, мимику, движения, эмоции).
+НЕ повторяй его слова - только действия.
+1-2 предложения. Пиши на РУССКОМ языке от третьего лица (он/она).
+
+Пример: "${personality.name} прищуривает глаза и усмехается. Его пальцы нервно постукивают по столу."`;
+
+    try {
+      const { content } = await queryLLMWithFallback(
+        [{ role: 'system', content: prompt }],
+        this.config
+      );
+      
+      const narration = content.trim();
+      
+      // Случайно выбираем - до или после слов персонажа
+      if (Math.random() > 0.5) {
+        return { narratorBefore: narration };
+      } else {
+        return { narratorAfter: narration };
+      }
+    } catch (error) {
+      return {};
+    }
+  }
+
+  /**
+   * Генерирует промпт для изображения на основе контекста
+   */
+  private async generateImagePrompt(
+    personality: Personality,
+    userMessage: string,
+    characterResponse: string,
+    conversationHistory: any[]
+  ): Promise<string> {
+    
+    const recentHistory = conversationHistory.slice(-3).map(m => {
+      const sender = m.senderId === 'user' ? 'Пользователь' : m.senderName;
+      return `${sender}: ${m.content}`;
+    }).join('\n');
+
+    const prompt = `Создай КРАТКИЙ промпт для генерации изображения на английском языке.
+
+ПЕРСОНАЖ: ${personality.name}
+ОПИСАНИЕ: ${personality.personality}, ${personality.description || ''}
+
+КОНТЕКСТ БЕСЕДЫ:
+${recentHistory}
+Пользователь: ${userMessage}
+${personality.name}: ${characterResponse}
+
+Создай промпт описывающий:
+1. Внешность персонажа (на основе описания)
+2. Текущую ситуацию/действие из контекста
+3. Настроение и атмосферу
+
+Формат: "detailed portrait/full body of [character description], [action/situation], [mood/atmosphere], high quality, detailed"
+
+Только промпт на английском, без пояснений.`;
+
+    try {
+      const { content } = await queryLLMWithFallback(
+        [{ role: 'system', content: prompt }],
+        this.config
+      );
+      
+      return content.trim();
+    } catch (error) {
+      console.error('Ошибка генерации промпта для изображения:', error);
+      return `portrait of ${personality.name}, ${personality.personality}, high quality`;
     }
   }
 
