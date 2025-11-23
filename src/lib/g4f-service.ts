@@ -1,0 +1,282 @@
+/**
+ * g4f API Service - Бесплатный AI без цензуры
+ * Документация: https://g4f.dev/docs/
+ * 
+ * Поддерживает:
+ * - Генерацию текста (chat completion)
+ * - Генерацию изображений (image generation)
+ * - Без API ключа для бесплатных провайдеров
+ * - Множество fallback эндпоинтов
+ */
+
+interface Message {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+interface G4FTextResponse {
+  content: string;
+  model: string;
+  provider: string;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+interface G4FImageResponse {
+  url: string;
+  model: string;
+  provider: string;
+}
+
+export interface G4FConfig {
+  apiKey?: string;
+  textModel?: string;
+  imageModel?: string;
+  baseUrl?: string;
+}
+
+/**
+ * Список бесплатных эндпоинтов для текста (в порядке приоритета)
+ */
+const TEXT_ENDPOINTS = [
+  {
+    name: 'g4f-groq',
+    url: 'https://g4f.dev/api/groq',
+    model: 'mixtral-8x7b',
+  },
+  {
+    name: 'g4f-oss',
+    url: 'https://g4f.dev/api/gpt-oss-120b',
+    model: 'gpt-oss-120b',
+  },
+  {
+    name: 'g4f-host',
+    url: 'https://host.g4f.dev/v1/chat/completions',
+    model: 'gpt-4.1',
+  },
+];
+
+/**
+ * Список бесплатных эндпоинтов для изображений
+ */
+const IMAGE_ENDPOINTS = [
+  {
+    name: 'pollinations',
+    url: 'https://image.pollinations.ai/prompt',
+    direct: true, // прямой URL генерации
+  },
+  {
+    name: 'g4f-host',
+    url: 'https://host.g4f.dev/v1/images/generations',
+    model: 'flux',
+    direct: false,
+  },
+];
+
+/**
+ * Генерация текста через g4f с fallback
+ */
+export async function generateTextG4F(
+  messages: Message[],
+  config: G4FConfig = {}
+): Promise<G4FTextResponse> {
+  let lastError: Error | null = null;
+
+  // Пробуем каждый эндпоинт по очереди
+  for (const endpoint of TEXT_ENDPOINTS) {
+    try {
+      console.log(`🤖 G4F: Trying ${endpoint.name}...`);
+
+      const isStandardFormat = endpoint.url.includes('/chat/completions');
+      
+      const requestBody = isStandardFormat
+        ? {
+            model: endpoint.model,
+            messages,
+            temperature: 0.9,
+            max_tokens: 2000,
+            stream: false,
+          }
+        : {
+            prompt: messages.map(m => `${m.role}: ${m.content}`).join('\n') + '\nassistant:',
+            model: endpoint.model,
+          };
+
+      const response = await fetch(endpoint.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(30000), // 30 second timeout
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      // Парсим ответ в зависимости от формата
+      let content: string;
+      if (data.choices && data.choices[0]?.message?.content) {
+        // OpenAI-compatible format
+        content = data.choices[0].message.content;
+      } else if (data.response) {
+        // Simple response format
+        content = data.response;
+      } else if (typeof data === 'string') {
+        content = data;
+      } else if (data.text) {
+        content = data.text;
+      } else {
+        throw new Error('Unknown response format');
+      }
+
+      console.log(`✅ G4F: Text generated successfully via ${endpoint.name}`);
+
+      return {
+        content,
+        model: endpoint.model,
+        provider: endpoint.name,
+        usage: data.usage,
+      };
+    } catch (error: any) {
+      console.log(`❌ ${endpoint.name} failed:`, error.message);
+      lastError = error;
+      // Продолжаем пробовать следующий эндпоинт
+      continue;
+    }
+  }
+
+  // Если все эндпоинты недоступны
+  console.error('❌ All G4F text endpoints failed');
+  throw lastError || new Error('All G4F text endpoints unavailable');
+}
+
+/**
+ * Генерация изображений через g4f с fallback
+ */
+export async function generateImageG4F(
+  prompt: string,
+  config: G4FConfig = {}
+): Promise<G4FImageResponse> {
+  let lastError: Error | null = null;
+
+  // Пробуем каждый эндпоинт по очереди
+  for (const endpoint of IMAGE_ENDPOINTS) {
+    try {
+      console.log(`🎨 G4F: Trying ${endpoint.name} for image generation...`);
+
+      if (endpoint.direct) {
+        // Прямой URL (например, Pollinations)
+        const encodedPrompt = encodeURIComponent(prompt);
+        const imageUrl = `${endpoint.url}/${encodedPrompt}?width=1024&height=1024&nologo=true`;
+        
+        // Проверяем доступность
+        const testResponse = await fetch(imageUrl, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (!testResponse.ok) {
+          throw new Error(`HTTP ${testResponse.status}`);
+        }
+
+        console.log(`✅ G4F: Image generated successfully via ${endpoint.name}`);
+
+        return {
+          url: imageUrl,
+          model: 'pollinations',
+          provider: endpoint.name,
+        };
+      } else {
+        // API endpoint (OpenAI-compatible)
+        const response = await fetch(endpoint.url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: endpoint.model || 'flux',
+            prompt,
+            size: '1024x1024',
+            response_format: 'url',
+          }),
+          signal: AbortSignal.timeout(60000), // 60 seconds for image generation
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (!data.data || !data.data[0]?.url) {
+          throw new Error('Invalid response format');
+        }
+
+        console.log(`✅ G4F: Image generated successfully via ${endpoint.name}`);
+
+        return {
+          url: data.data[0].url,
+          model: endpoint.model || 'flux',
+          provider: endpoint.name,
+        };
+      }
+    } catch (error: any) {
+      console.log(`❌ ${endpoint.name} failed:`, error.message);
+      lastError = error;
+      // Продолжаем пробовать следующий эндпоинт
+      continue;
+    }
+  }
+
+  // Если все эндпоинты недоступны
+  console.error('❌ All G4F image endpoints failed');
+  throw lastError || new Error('All G4F image endpoints unavailable');
+}
+
+/**
+ * Проверка доступности G4F API
+ */
+export async function checkG4FAvailable(baseUrl: string = 'https://host.g4f.dev/v1'): Promise<boolean> {
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000),
+    });
+    return response.ok;
+  } catch (error) {
+    console.log('G4F API check failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Получить список доступных моделей
+ */
+export async function getG4FModels(config: G4FConfig = {}): Promise<any[]> {
+  const baseUrl = config.baseUrl || 'https://host.g4f.dev/v1';
+  
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: {
+        ...(config.apiKey && { 'Authorization': `Bearer ${config.apiKey}` }),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch models: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Failed to fetch G4F models:', error);
+    return [];
+  }
+}

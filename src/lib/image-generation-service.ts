@@ -1,5 +1,7 @@
 // Сервис для генерации изображений через локальный Stable Diffusion
 
+import { generateImageG4F, G4FConfig } from './g4f-service';
+
 export interface ImageGenerationOptions {
   prompt: string;
   negativePrompt?: string;
@@ -11,93 +13,13 @@ export interface ImageGenerationOptions {
 
 export interface ImageGenerationResult {
   imageUrl: string;
-  source: 'fooocus' | 'automatic1111' | 'fallback';
+  source: 'g4f' | 'fallback';
 }
 
 export interface ImageGenConfig {
-  fooocus_url?: string;
-  sd_webui_url?: string;
-}
-
-// 1. Попытка использовать Fooocus (порт 7860)
-async function tryFooocus(options: ImageGenerationOptions, config: ImageGenConfig): Promise<string | null> {
-  const fooocusUrl = config.fooocus_url || process.env.FOOOCUS_API_URL || 'http://localhost:7860';
-  
-  try {
-    console.log(`🎨 Trying Fooocus at ${fooocusUrl}...`);
-    
-    const response = await fetch(`${fooocusUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt: options.prompt,
-        negative_prompt: options.negativePrompt || '',
-        image_number: 1,
-        image_seed: -1,
-        sharpness: 2.0,
-        guidance_scale: options.cfgScale || 7.0,
-        base_model_name: 'realisticVisionV51_v51VAE.safetensors',
-        performance_selection: 'Speed',
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Fooocus API failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-    
-    if (data.images && data.images.length > 0) {
-      console.log('✅ Fooocus image generated');
-      return `data:image/png;base64,${data.images[0]}`;
-    }
-    
-    return null;
-  } catch (error: any) {
-    console.log('❌ Fooocus unavailable:', error.message);
-    return null;
-  }
-}
-
-// 2. Попытка использовать AUTOMATIC1111 (порт 7860)
-async function tryAutomatic1111(options: ImageGenerationOptions, config: ImageGenConfig): Promise<string | null> {
-  const a1111Url = config.sd_webui_url || process.env.SD_WEBUI_URL || 'http://localhost:7860';
-  
-  try {
-    console.log(`🎨 Trying AUTOMATIC1111 at ${a1111Url}...`);
-    
-    const response = await fetch(`${a1111Url}/sdapi/v1/txt2img`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt: options.prompt,
-        negative_prompt: options.negativePrompt || 'low quality, blurry, distorted, deformed',
-        steps: options.steps || 20,
-        cfg_scale: options.cfgScale || 7,
-        width: options.width || 512,
-        height: options.height || 512,
-        sampler_name: 'Euler a',
-        seed: -1,
-        batch_size: 1,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`A1111 API failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-    
-    if (data.images && data.images.length > 0) {
-      console.log('✅ AUTOMATIC1111 image generated');
-      return `data:image/png;base64,${data.images[0]}`;
-    }
-    
-    return null;
-  } catch (error: any) {
-    console.log('❌ AUTOMATIC1111 unavailable:', error.message);
-    return null;
-  }
+  g4f_api_key?: string;
+  g4f_image_model?: string;
+  g4f_base_url?: string;
 }
 
 // Fallback заглушка
@@ -113,7 +35,7 @@ function getFallbackImage(): string {
         быть сгенерировано
       </text>
       <text x="50%" y="70%" text-anchor="middle" font-size="16" fill="#9ca3af" font-family="Arial">
-        Настройте API в настройках
+        Попробуйте ещё раз
       </text>
     </svg>
   `;
@@ -121,55 +43,56 @@ function getFallbackImage(): string {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 }
 
-// Основная функция генерации с fallback
+// Основная функция генерации с использованием g4f
 export async function generateImageWithFallback(options: ImageGenerationOptions, config: ImageGenConfig = {}): Promise<ImageGenerationResult> {
-  console.log('\n🖼️ Starting image generation with fallback chain...\n');
+  console.log('\n🖼️ Starting image generation with g4f...\n');
 
-  // 1. Пробуем Fooocus (легче и быстрее)
-  const fooocusResult = await tryFooocus(options, config);
-  if (fooocusResult) {
-    return { imageUrl: fooocusResult, source: 'fooocus' };
+  try {
+    // Используем g4f для генерации изображений
+    const g4fConfig: G4FConfig = {
+      apiKey: config.g4f_api_key || process.env.G4F_API_KEY,
+      imageModel: config.g4f_image_model || process.env.G4F_IMAGE_MODEL || 'flux',
+      baseUrl: config.g4f_base_url || process.env.G4F_BASE_URL || 'https://host.g4f.dev/v1',
+    };
+
+    // Формируем полный prompt с учетом negative prompt
+    let fullPrompt = options.prompt;
+    if (options.negativePrompt) {
+      fullPrompt += `. Avoid: ${options.negativePrompt}`;
+    }
+
+    const result = await generateImageG4F(fullPrompt, g4fConfig);
+    
+    return {
+      imageUrl: result.url,
+      source: 'g4f'
+    };
+  } catch (error: any) {
+    console.error('❌ G4F image generation unavailable, using fallback:', error.message);
+    
+    // Fallback если g4f недоступен
+    return {
+      imageUrl: getFallbackImage(),
+      source: 'fallback'
+    };
   }
-
-  // 2. Пробуем AUTOMATIC1111 (более продвинутый)
-  const a1111Result = await tryAutomatic1111(options, config);
-  if (a1111Result) {
-    return { imageUrl: a1111Result, source: 'automatic1111' };
-  }
-
-  // 3. Fallback если локальные генераторы недоступны
-  console.log('⚠️ All image generators unavailable, using fallback');
-  return {
-    imageUrl: getFallbackImage(),
-    source: 'fallback'
-  };
 }
 
-// Функция для проверки доступности генераторов
+// Функция для проверки доступности g4f
 export async function checkImageGeneratorsStatus(config: ImageGenConfig = {}) {
-  const fooocusUrl = config.fooocus_url || process.env.FOOOCUS_API_URL || 'http://localhost:7860';
-  const a1111Url = config.sd_webui_url || process.env.SD_WEBUI_URL || 'http://localhost:7860';
+  const baseUrl = config.g4f_base_url || process.env.G4F_BASE_URL || 'https://host.g4f.dev/v1';
 
-  const status = {
-    fooocus: false,
-    automatic1111: false,
-  };
-
-  // Проверяем Fooocus
   try {
-    const response = await fetch(`${fooocusUrl}/api/status`, { method: 'GET' });
-    status.fooocus = response.ok;
+    const response = await fetch(`${baseUrl}/models`, { 
+      method: 'GET',
+      signal: AbortSignal.timeout(5000),
+    });
+    return {
+      g4f: response.ok,
+    };
   } catch {
-    status.fooocus = false;
+    return {
+      g4f: false,
+    };
   }
-
-  // Проверяем AUTOMATIC1111
-  try {
-    const response = await fetch(`${a1111Url}/sdapi/v1/sd-models`, { method: 'GET' });
-    status.automatic1111 = response.ok;
-  } catch {
-    status.automatic1111 = false;
-  }
-
-  return status;
 }
