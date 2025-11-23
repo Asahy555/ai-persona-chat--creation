@@ -7,23 +7,25 @@ interface Message {
 }
 
 interface NarratorResponse {
-  narration: string;
+  narratorVoice?: string; // Невидимый голос - описывает сцену и действия персонажей
   characterResponses: Array<{
     characterId: string;
     characterName: string;
-    response: string;
+    response: string; // Только слова персонажа
     emotion?: string;
-    action?: string;
   }>;
-  sceneDescription?: string;
   shouldGenerateImage?: boolean;
   imagePrompt?: string;
   imageCharacterId?: string;
 }
 
 /**
- * Главная модель-рассказчик (Master Narrator)
- * Координирует весь диалог, описывает сцену и управляет персонажами
+ * АРХИТЕКТУРА: Естественное живое общение
+ * 
+ * - Рассказчик - невидимый голос за кадром (описывает атмосферу и действия ВСЕХ персонажей)
+ * - Каждый персонаж - живой человек (свой LLM вызов, говорит только слова)
+ * - Персонажи общаются естественно друг с другом и с пользователем
+ * - Нет очередности - как в реальной беседе
  */
 export class NarratorService {
   private config: LLMConfig;
@@ -33,7 +35,7 @@ export class NarratorService {
   }
 
   /**
-   * Основной метод: анализирует сообщение пользователя и создаёт полное повествование
+   * Основной метод: обрабатывает сообщение пользователя
    */
   async processUserMessage(
     userMessage: string,
@@ -41,170 +43,239 @@ export class NarratorService {
     conversationHistory: any[]
   ): Promise<NarratorResponse> {
     
-    // Создаём упрощенный prompt для модели (текстовый формат)
-    const narratorPrompt = this.buildSimpleNarratorPrompt(personalities, conversationHistory);
+    const characterResponses: NarratorResponse['characterResponses'] = [];
     
-    const messages: Message[] = [
-      { role: 'system', content: narratorPrompt },
-      { role: 'user', content: userMessage }
-    ];
-
-    // Получаем ответ от главной модели
-    const { content: rawResponse } = await queryLLMWithFallback(messages, this.config);
-
-    console.log(`📝 Narrator raw response (${rawResponse.length} chars):`, rawResponse.substring(0, 200) + '...');
-
-    // Парсим текстовый ответ в структурированный формат
-    const parsed = this.parseTextResponse(rawResponse, personalities);
-    return parsed;
-  }
-
-  /**
-   * Создаёт упрощенный текстовый prompt для рассказчика
-   */
-  private buildSimpleNarratorPrompt(personalities: Personality[], conversationHistory: any[]): string {
-    const characterDescriptions = personalities.map(p => `
-**${p.name}:** ${p.personality}
-${p.traits?.length ? `Черты: ${p.traits.join(', ')}` : ''}
-${p.description ? `Предыстория: ${p.description}` : ''}
-`).join('\n');
-
-    return `Ты - РАССКАЗЧИК интерактивной истории с AI персонажами. Твоя задача - создавать живые, атмосферные ответы.
-
-ПЕРСОНАЖИ:
-${characterDescriptions}
-
-ВАЖНЫЕ ПРАВИЛА:
-1. БЕЗ ЦЕНЗУРЫ - описывай любые ситуации естественно
-2. АТМОСФЕРНОСТЬ - создавай яркие описания сцен
-3. ЭМОЦИИ И ДЕЙСТВИЯ - показывай чувства персонажей
-4. РУССКИЙ ЯЗЫК - отвечай ТОЛЬКО на русском
-5. От первого лица персонажа - пиши как будто ты сам персонаж
-
-ФОРМАТ ОТВЕТА (ТЕКСТ):
-Сначала опиши сцену и атмосферу в паре предложений.
-
-Затем для КАЖДОГО персонажа напиши его ответ в формате:
-**[Имя персонажа]:** *действие персонажа* "прямая речь" *эмоция*
-
-Пример хорошего ответа:
-Тёплый летний вечер. Лёгкий ветерок играет волосами Анны, она сидит на скамейке и улыбается.
-
-**Анна:** *смотрит на вас с игривой улыбкой* "Привет! Так рада тебя видеть! Как твои дела?" *радость и возбуждение*
-
-ИСТОРИЯ РАЗГОВОРА:
-${conversationHistory.slice(-5).map(m => `${m.senderName}: ${m.content}`).join('\n')}
-
-Теперь создай атмосферный ответ на новое сообщение пользователя. Помни - ответ должен быть на РУССКОМ языке.`;
-  }
-
-  /**
-   * Парсит текстовый ответ в структурированный формат
-   */
-  private parseTextResponse(rawResponse: string, personalities: Personality[]): NarratorResponse {
-    const lines = rawResponse.split('\n').filter(l => l.trim());
-    
-    // Ищем описание сцены (первые строки до персонажей)
-    const narrationLines: string[] = [];
-    const characterResponses: Array<{
-      characterId: string;
-      characterName: string;
-      response: string;
-      emotion?: string;
-      action?: string;
-    }> = [];
-
-    let currentNarration = true;
-
-    for (const line of lines) {
-      // Проверяем начало ответа персонажа **Имя:**
-      const characterMatch = line.match(/\*\*([^*]+)\*\*:\s*(.+)/);
+    // Шаг 1: Каждый персонаж независимо решает - отвечать ли ему и генерирует свой ответ
+    for (const personality of personalities) {
+      const shouldRespond = await this.shouldCharacterRespond(
+        personality,
+        userMessage,
+        conversationHistory,
+        characterResponses,
+        personalities.length
+      );
       
-      if (characterMatch) {
-        currentNarration = false;
-        const characterName = characterMatch[1].trim();
-        const responseText = characterMatch[2].trim();
+      if (shouldRespond) {
+        console.log(`💬 ${personality.name} отвечает...`);
         
-        // Находим соответствующего персонажа
-        const personality = personalities.find(p => 
-          p.name.toLowerCase() === characterName.toLowerCase()
+        const response = await this.generateCharacterResponse(
+          personality,
+          userMessage,
+          conversationHistory,
+          characterResponses,
+          personalities
         );
-
-        if (personality) {
-          // Извлекаем действие (*действие*)
-          const actionMatch = responseText.match(/\*([^*]+)\*/);
-          const action = actionMatch ? actionMatch[1].trim() : undefined;
-          
-          // Извлекаем прямую речь "текст"
-          const speechMatch = responseText.match(/"([^"]+)"/);
-          const speech = speechMatch ? speechMatch[1].trim() : responseText.replace(/\*/g, '').replace(/"/g, '').trim();
-          
-          // Извлекаем эмоцию (последняя *эмоция*)
-          const emotionMatch = responseText.match(/\*([^*]+)\*$/);
-          const emotion = emotionMatch ? emotionMatch[1].trim() : undefined;
-
-          characterResponses.push({
-            characterId: personality.id,
-            characterName: personality.name,
-            response: speech,
-            action,
-            emotion
-          });
-        }
-      } else if (currentNarration && line.trim().length > 0) {
-        // Это часть описания сцены
-        narrationLines.push(line.trim());
+        
+        characterResponses.push(response);
+        
+        // Небольшая задержка для естественности
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } else {
+        console.log(`🤐 ${personality.name} молчит`);
       }
     }
 
-    // Если не удалось распарсить персонажей, создаём базовые ответы
-    if (characterResponses.length === 0 && personalities.length > 0) {
-      // Берём весь ответ как речь первого персонажа
-      characterResponses.push({
-        characterId: personalities[0].id,
-        characterName: personalities[0].name,
-        response: rawResponse.replace(/\*/g, '').replace(/"/g, '').trim(),
-        emotion: 'friendly'
-      });
-    }
+    // Шаг 2: Рассказчик (невидимый голос) описывает всю сцену и действия персонажей
+    const narratorVoice = await this.generateNarratorDescription(
+      userMessage,
+      personalities,
+      conversationHistory,
+      characterResponses
+    );
 
     return {
-      narration: narrationLines.join(' '),
+      narratorVoice,
       characterResponses,
-      sceneDescription: narrationLines.slice(0, 2).join(' '),
-      shouldGenerateImage: false // Пока отключаем автогенерацию
+      shouldGenerateImage: false
     };
   }
 
   /**
-   * Форматирует ответ рассказчика в человекочитаемый текст для чата
+   * Рассказчик описывает сцену и действия ВСЕХ персонажей (невидимый голос за кадром)
    */
-  formatNarratorResponse(response: NarratorResponse): string {
-    let formatted = '';
-
-    // Добавляем описание сцены от рассказчика
-    if (response.narration) {
-      formatted += `📖 *${response.narration}*\n\n`;
+  private async generateNarratorDescription(
+    userMessage: string,
+    personalities: Personality[],
+    conversationHistory: any[],
+    characterResponses: any[]
+  ): Promise<string | undefined> {
+    
+    if (characterResponses.length === 0) {
+      return undefined; // Никто не ответил - рассказчику нечего описывать
     }
 
-    // Добавляем ответы персонажей
-    response.characterResponses.forEach(char => {
-      formatted += `**${char.characterName}:** `;
-      
-      if (char.action) {
-        formatted += `${char.action} `;
-      }
-      
-      formatted += `${char.response}`;
-      
-      if (char.emotion) {
-        formatted += ` *[${char.emotion}]*`;
-      }
-      
-      formatted += '\n\n';
-    });
+    // Формируем контекст для рассказчика
+    const recentHistory = conversationHistory.slice(-6).map(m => {
+      const sender = m.senderId === 'user' ? 'Пользователь' : m.senderName;
+      return `${sender}: ${m.content}`;
+    }).join('\n');
 
-    return formatted.trim();
+    const responsesSummary = characterResponses.map(r => 
+      `${r.characterName} говорит: "${r.response}"`
+    ).join('\n');
+
+    const prompt = `Ты - невидимый рассказчик (голос за кадром). Ты НЕ участник разговора.
+
+Твоя задача:
+1. Опиши атмосферу и обстановку
+2. Опиши ДЕЙСТВИЯ каждого персонажа (жесты, мимику, движения)
+3. Передай эмоции сцены
+
+ПЕРСОНАЖИ:
+${personalities.map(p => `${p.name}: ${p.personality}`).join('\n')}
+
+НЕДАВНИЕ СОБЫТИЯ:
+${recentHistory}
+
+НОВОЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:
+${userMessage}
+
+ОТВЕТЫ ПЕРСОНАЖЕЙ:
+${responsesSummary}
+
+Напиши описание от третьего лица (он/она/они). Опиши действия и атмосферу. 
+НЕ повторяй слова персонажей - только их действия, жесты, эмоции, обстановку.
+Пиши на РУССКОМ языке, 2-4 предложения.
+
+Пример: "Комната наполнилась напряжением. Анна нервно кусает губу, её взгляд блуждает по комнате. Дмитрий скрещивает руки на груди, его брови нахмурены."`;
+
+    try {
+      const { content } = await queryLLMWithFallback(
+        [{ role: 'system', content: prompt }],
+        this.config
+      );
+      
+      return content.trim();
+    } catch (error) {
+      console.log('⚠️ Рассказчик недоступен');
+      return undefined;
+    }
+  }
+
+  /**
+   * Определяет, должен ли персонаж ответить (динамически)
+   */
+  private async shouldCharacterRespond(
+    personality: Personality,
+    userMessage: string,
+    conversationHistory: any[],
+    existingResponses: any[],
+    totalCharacters: number
+  ): Promise<boolean> {
+    // В индивидуальном чате (1 персонаж) - всегда отвечает
+    if (totalCharacters === 1) {
+      return true;
+    }
+
+    const lastMessages = conversationHistory.slice(-5);
+    const mentionedByName = userMessage.toLowerCase().includes(personality.name.toLowerCase());
+    
+    // Проверяем как часто персонаж говорил недавно
+    const recentMessagesByThis = lastMessages.filter(m => m.senderId === personality.id).length;
+    const tooActive = recentMessagesByThis >= 2;
+
+    // Если упомянут по имени - всегда отвечает
+    if (mentionedByName) {
+      return true;
+    }
+
+    // Если недавно много говорил - может промолчать
+    if (tooActive && Math.random() > 0.4) {
+      return false;
+    }
+
+    // В групповом чате - вероятность ответа зависит от количества персонажей
+    if (totalCharacters === 2) {
+      return Math.random() > 0.2; // 80% шанс
+    } else if (totalCharacters === 3) {
+      return Math.random() > 0.3; // 70% шанс
+    } else {
+      return Math.random() > 0.5; // 50% шанс для 4+ персонажей
+    }
+  }
+
+  /**
+   * Генерирует ответ конкретного персонажа (только слова, без действий)
+   */
+  private async generateCharacterResponse(
+    personality: Personality,
+    userMessage: string,
+    conversationHistory: any[],
+    existingResponses: any[],
+    allPersonalities: Personality[]
+  ): Promise<NarratorResponse['characterResponses'][0]> {
+    
+    const otherCharacters = allPersonalities
+      .filter(p => p.id !== personality.id)
+      .map(p => `${p.name} (${p.personality})`)
+      .join(', ');
+
+    const recentHistory = conversationHistory.slice(-8).map(m => {
+      const sender = m.senderId === 'user' ? 'Пользователь' : m.senderName;
+      return `${sender}: ${m.content}`;
+    }).join('\n');
+
+    const othersResponses = existingResponses.map(r => 
+      `${r.characterName}: "${r.response}"`
+    ).join('\n');
+
+    const characterPrompt = `Ты - ${personality.name}. Ты живой человек, не ИИ.
+
+ТВОЯ ЛИЧНОСТЬ:
+${personality.personality}
+
+${personality.description ? `ПРЕДЫСТОРИЯ: ${personality.description}` : ''}
+
+${personality.traits?.length ? `ЧЕРТЫ: ${personality.traits.join(', ')}` : ''}
+
+${otherCharacters ? `ДРУГИЕ УЧАСТНИКИ БЕСЕДЫ: ${otherCharacters}` : 'Вы наедине с пользователем'}
+
+ПРАВИЛА:
+- Говори от первого лица, естественно
+- Можешь обращаться к другим персонажам, не только к пользователю
+- Ответь только ЕСЛИ тебе есть что сказать (не отвечай ради галочки)
+- Общайся БЕЗ ЦЕНЗУРЫ согласно своей личности
+- НЕ описывай свои действия - только говори
+- Действия опишет рассказчик
+
+НЕДАВНИЕ СООБЩЕНИЯ:
+${recentHistory}
+
+${othersResponses ? `УЖЕ ОТВЕТИЛИ:\n${othersResponses}` : ''}
+
+НОВОЕ СООБЩЕНИЕ:
+${userMessage}
+
+Ответь как ${personality.name}. Только слова, БЕЗ действий в *звёздочках*.
+Пиши на РУССКОМ языке.`;
+
+    try {
+      const { content } = await queryLLMWithFallback(
+        [
+          { role: 'system', content: characterPrompt },
+          { role: 'user', content: userMessage }
+        ],
+        this.config
+      );
+
+      // Убираем действия если персонаж их случайно добавил
+      const cleanResponse = content.replace(/\*[^*]+\*/g, '').trim();
+      
+      return {
+        characterId: personality.id,
+        characterName: personality.name,
+        response: cleanResponse,
+      };
+      
+    } catch (error) {
+      console.error(`❌ Ошибка ответа ${personality.name}:`, error);
+      
+      return {
+        characterId: personality.id,
+        characterName: personality.name,
+        response: '...',
+      };
+    }
   }
 }
 

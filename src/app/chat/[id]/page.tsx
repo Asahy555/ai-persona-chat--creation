@@ -76,13 +76,12 @@ export default function ChatPage() {
     const apiConfig = getApiConfig();
 
     try {
-      // Используем новый API с рассказчиком
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: messageInput.trim(),
-          personalities, // Передаём все личности
+          personalities,
           conversationHistory: currentChat.messages,
           apiConfig,
         }),
@@ -96,13 +95,13 @@ export default function ChatPage() {
       const data = await response.json();
       const narratorResponse = data.narratorResponse;
 
-      // 1. Добавляем повествование рассказчика (если есть)
-      if (narratorResponse.narration) {
+      // 1. Добавляем описание рассказчика (невидимый голос за кадром)
+      if (narratorResponse.narratorVoice) {
         const narratorMessage: Message = {
           id: `${Date.now()}-narrator`,
           senderId: 'narrator',
-          senderName: '📖 Рассказчик',
-          content: narratorResponse.narration,
+          senderName: '',
+          content: narratorResponse.narratorVoice,
           timestamp: new Date().toISOString(),
         };
 
@@ -117,26 +116,16 @@ export default function ChatPage() {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
-      // 2. Добавляем ответы персонажей
+      // 2. Добавляем ответы персонажей (только слова)
       for (const charResponse of narratorResponse.characterResponses) {
         const personality = personalities.find(p => p.id === charResponse.characterId);
         if (!personality) continue;
-
-        // Форматируем контент с действиями и эмоциями
-        let content = '';
-        if (charResponse.action) {
-          content += `${charResponse.action}\n\n`;
-        }
-        content += charResponse.response;
-        if (charResponse.emotion) {
-          content += ` *[${charResponse.emotion}]*`;
-        }
 
         const characterMessage: Message = {
           id: `${Date.now()}-${charResponse.characterId}-${Math.random()}`,
           senderId: charResponse.characterId,
           senderName: charResponse.characterName,
-          content,
+          content: charResponse.response,
           timestamp: new Date().toISOString(),
         };
 
@@ -330,15 +319,13 @@ export default function ChatPage() {
             const isNarrator = message.senderId === 'narrator';
             const personality = personalities.find(p => p.id === message.senderId);
 
-            // Специальное оформление для рассказчика
+            // Невидимый голос рассказчика (без имени, курсивом)
             if (isNarrator) {
               return (
-                <div key={message.id} className="flex justify-center">
-                  <Card className="p-3 md:p-4 max-w-[90%] bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 border-amber-200 dark:border-amber-800">
-                    <p className="text-xs md:text-sm italic text-amber-900 dark:text-amber-100 text-center whitespace-pre-wrap">
-                      {message.content}
-                    </p>
-                  </Card>
+                <div key={message.id} className="flex justify-center px-4">
+                  <p className="text-xs md:text-sm italic text-gray-600 dark:text-gray-400 text-center max-w-[85%] leading-relaxed">
+                    {message.content}
+                  </p>
                 </div>
               );
             }
@@ -398,7 +385,7 @@ export default function ChatPage() {
                 <div className="flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <p className="text-xs md:text-sm text-muted-foreground">
-                    {isGeneratingImage ? 'Генерация изображения...' : 'Рассказчик создаёт сцену...'}
+                    {isGeneratingImage ? 'Генерация изображения...' : 'Персонажи отвечают...'}
                   </p>
                 </div>
               </Card>
