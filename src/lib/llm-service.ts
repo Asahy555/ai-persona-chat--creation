@@ -145,6 +145,7 @@ async function tryOpenRouter(messages: Message[], config: LLMConfig): Promise<st
 
   try {
     console.log('🌐 Calling OpenRouter API...');
+    console.log('🔑 API Key (first 20 chars):', apiKey.substring(0, 20) + '...');
     
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -152,26 +153,30 @@ async function tryOpenRouter(messages: Message[], config: LLMConfig): Promise<st
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        'X-Title': 'AI Personalities Chat',
       },
       body: JSON.stringify({
-        model: 'mistralai/mistral-7b-instruct:free',
+        model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
         messages: messages.map(m => ({
           role: m.role,
           content: m.content,
         })),
         temperature: 0.9,
+        max_tokens: 2000,
       }),
     });
 
     if (!response.ok) {
-      throw new Error(`OpenRouter API failed: ${response.status}`);
+      const errorText = await response.text();
+      console.error('❌ OpenRouter API error:', response.status, errorText);
+      throw new Error(`OpenRouter API failed: ${response.status} - ${errorText}`);
     }
 
     const data = await response.json();
     console.log('✅ OpenRouter response received');
     return data.choices[0].message.content;
   } catch (error: any) {
-    console.log('❌ OpenRouter unavailable:', error.message);
+    console.error('❌ OpenRouter error details:', error);
     return null;
   }
 }
