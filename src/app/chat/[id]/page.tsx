@@ -22,6 +22,8 @@ export default function ChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Индикаторы набора для нескольких личностей
+  const [typingIds, setTypingIds] = useState<Set<string>>(new Set());
 
   // Load API keys from localStorage
   const getApiConfig = () => {
@@ -50,6 +52,25 @@ export default function ChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat?.messages]);
+
+  // Плавный вывод текста как печать
+  const typewriterAppend = async (messageId: string, fullText: string, speed = 18) => {
+    for (let i = 1; i <= fullText.length; i++) {
+      const chunk = fullText.slice(0, i);
+      setChat(prev => {
+        if (!prev) return prev;
+        const updated = {
+          ...prev,
+          messages: prev.messages.map(m => (m.id === messageId ? { ...m, content: chunk } : m)),
+        };
+        storage.saveChat(updated);
+        return updated;
+      });
+      // небольшая задержка для эффекта печати
+      // более быстрый набор на мобильных
+      await new Promise(r => setTimeout(r, speed));
+    }
+  };
 
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !chat || isLoading || personalities.length === 0) return;
@@ -80,7 +101,7 @@ export default function ChatPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: messageInput.trim(),
+          message: userMessage.content,
           personalities,
           conversationHistory: currentChat.messages,
           apiConfig,
@@ -94,6 +115,10 @@ export default function ChatPage() {
 
       const data = await response.json();
       const narratorResponse = data.narratorResponse;
+
+      // Установить индикаторы набора для всех, кто будет отвечать
+      const responders: string[] = (narratorResponse.characterResponses || []).map((r: any) => r.characterId);
+      setTypingIds(new Set(responders));
 
       // 1. Добавляем начальное описание рассказчика (если есть)
       if (narratorResponse.narratorVoice) {
@@ -113,10 +138,10 @@ export default function ChatPage() {
 
         setChat(currentChat);
         storage.saveChat(currentChat);
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 250));
       }
 
-      // 2. Добавляем ответы персонажей с описаниями рассказчика + генерируем фото ПОСЛЕ каждого ответа
+      // 2. Добавляем ответы персонажей с описаниями рассказчика + генерируем фото ПОСЛЕ каждого ответа (с плавной печатью)
       for (const charResponse of narratorResponse.characterResponses) {
         const personality = personalities.find(p => p.id === charResponse.characterId);
         if (!personality) continue;
@@ -139,15 +164,16 @@ export default function ChatPage() {
 
           setChat(currentChat);
           storage.saveChat(currentChat);
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await new Promise(resolve => setTimeout(resolve, 250));
         }
 
-        // 2b. Слова персонажа
+        // 2b. Слова персонажа с постепенным набором (typewriter)
+        const characterMessageId = `${Date.now()}-${charResponse.characterId}-${Math.random()}`;
         const characterMessage: Message = {
-          id: `${Date.now()}-${charResponse.characterId}-${Math.random()}`,
+          id: characterMessageId,
           senderId: charResponse.characterId,
           senderName: charResponse.characterName,
-          content: charResponse.response,
+          content: '',
           timestamp: new Date().toISOString(),
         };
 
@@ -159,7 +185,15 @@ export default function ChatPage() {
 
         setChat(currentChat);
         storage.saveChat(currentChat);
-        await new Promise(resolve => setTimeout(resolve, 400));
+
+        await typewriterAppend(characterMessageId, charResponse.response);
+
+        // Снять индикатор набора для персонажа
+        setTypingIds(prev => {
+          const next = new Set(prev);
+          next.delete(charResponse.characterId);
+          return next;
+        });
 
         // 2c. Рассказчик описывает действия ПОСЛЕ слов персонажа
         if (charResponse.narratorAfter) {
@@ -179,11 +213,12 @@ export default function ChatPage() {
 
           setChat(currentChat);
           storage.saveChat(currentChat);
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await new Promise(resolve => setTimeout(resolve, 220));
         }
 
         // 2d. Генерируем изображение ДЛЯ КАЖДОГО персонажа после его ответа
         if (charResponse.imagePrompt) {
+          const apiCfg = getApiConfig();
           setIsGeneratingImage(true);
           try {
             const imageResponse = await fetch('/api/generate-image-service', {
@@ -194,7 +229,7 @@ export default function ChatPage() {
                 negativePrompt: 'low quality, blurry, distorted, deformed',
                 width: 512,
                 height: 512,
-                apiConfig,
+                apiConfig: apiCfg,
               }),
             });
 
@@ -218,7 +253,7 @@ export default function ChatPage() {
 
                 setChat(currentChat);
                 storage.saveChat(currentChat);
-                await new Promise(resolve => setTimeout(resolve, 200));
+                await new Promise(resolve => setTimeout(resolve, 150));
               }
             }
           } catch (error) {
@@ -234,6 +269,8 @@ export default function ChatPage() {
       toast.error('Не удалось отправить сообщение. Проверьте настройки API.');
     } finally {
       setIsLoading(false);
+      // очистить индикаторы набора на всякий случай
+      setTypingIds(new Set());
     }
   };
 
@@ -419,14 +456,37 @@ export default function ChatPage() {
             );
           })}
 
-          {(isLoading || isGeneratingImage) && (
+          {/* Индикаторы набора для нескольких личностей */}
+          {typingIds.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 md:gap-3 pl-10">
+              {[...typingIds].map(id => {
+                const p = personalities.find(pp => pp.id === id);
+                if (!p) return null;
+                return (
+                  <div key={id} className="flex items-center gap-2 bg-white/80 dark:bg-gray-800/80 border rounded-full px-3 py-1">
+                    <Avatar className="h-5 w-5">
+                      <img src={p.avatar} alt={p.name} className="object-cover" />
+                    </Avatar>
+                    <span className="text-xs text-muted-foreground">{p.name} печатает…</span>
+                    <span className="flex gap-0.5 items-center">
+                      <span className="size-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.2s]"></span>
+                      <span className="size-1.5 rounded-full bg-gray-400 animate-bounce"></span>
+                      <span className="size-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:0.2s]"></span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {(isGeneratingImage) && (
             <div className="flex gap-2 md:gap-3">
               <div className="h-8 w-8 md:h-10 md:w-10 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse" />
               <Card className="p-3 md:p-4">
                 <div className="flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <p className="text-xs md:text-sm text-muted-foreground">
-                    {isGeneratingImage ? 'Генерация изображения...' : 'Персонажи отвечают...'}
+                    Генерация изображения...
                   </p>
                 </div>
               </Card>

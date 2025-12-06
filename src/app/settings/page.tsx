@@ -82,16 +82,22 @@ export default function SettingsPage() {
     }
     setTesting(true);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(`${g4fBaseUrl.replace(/\/$/, '')}/models`, { signal: controller.signal });
-      clearTimeout(timer);
+      const res = await fetch('/api/internal/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: g4fBaseUrl })
+      });
+
+      const data = await res.json();
+
       if (!res.ok) {
-        toast.error(`Проверка не удалась: HTTP ${res.status}`);
+        const statusInfo = data?.status ? `HTTP ${data.status}` : `HTTP ${res.status}`;
+        const reason = data?.error || data?.statusText || 'Проверка не удалась';
+        toast.error(`${reason}: ${statusInfo}`);
         return;
       }
-      const data = await res.json();
-      const count = Array.isArray(data?.data) ? data.data.length : 0;
+
+      const count = typeof data?.count === 'number' ? data.count : 0;
       toast.success(`Доступно моделей: ${count}`);
     } catch (e: any) {
       toast.error(`Ошибка проверки: ${e?.message || 'неизвестная ошибка'}`);
@@ -430,9 +436,13 @@ export default function SettingsPage() {
             <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Хранение чатов и личностей в localStorage — выполнено</li>
             <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Загрузка аватара + мультизагрузка фото (основа для точного 3D-аватара) — выполнено</li>
             <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Конфигурация локальных моделей (base URL, модели) — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Индикаторы «печатает…» для нескольких личностей — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Постепенный вывод ответа (typewriter) — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Прокси-проверка /models (без CORS, стабильные ошибки) — выполнено</li>
             <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-yellow-500" /> Использовать ref-фото для консистентной идентичности в генерации — план (промпты уже учитывают, нужны локальные инструменты: IP-Adapter/LoRA)</li>
             <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-yellow-500" /> 3D-аватар (мультивидовые позы/ракурсы) — план (интеграция с InstantID/SMPL/AnimateDiff)</li>
             <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-yellow-500" /> Полная оффлайн-работа на мобильных — план (подключение к локальному бэкенду/он-дивайс)</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-yellow-500" /> Серверный стрим (SSE/Server Actions) для настоящего стриминга — план</li>
           </ul>
           <p className="text-xs text-muted-foreground mt-3">Если нужно добавить ещё пункты — напишите, я расширю список (ничего не удаляя).</p>
         </Card>
