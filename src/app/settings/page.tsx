@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -21,6 +21,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -42,6 +43,10 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
+  // Models state
+  const [allModels, setAllModels] = useState<any[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem('ai_api_keys');
@@ -55,6 +60,25 @@ export default function SettingsPage() {
       // ignore
     }
   }, []);
+
+  // Heuristics to extract model id and type
+  const getModelId = (m: any): string => m?.id || m?.name || m?.model || m?.slug || '';
+  const isImageModel = (id: string) => /\b(flux|sdxl|stable|diffusion|dall[-_ ]?e|image|midjourney|kandinsky|playground)\b/i.test(id);
+
+  const textModels = useMemo(() => {
+    const ids = allModels.map(getModelId).filter(Boolean);
+    const unique = Array.from(new Set(ids));
+    return unique.filter((id) => !isImageModel(id));
+  }, [allModels]);
+
+  const imageModels = useMemo(() => {
+    const ids = allModels.map(getModelId).filter(Boolean);
+    const unique = Array.from(new Set(ids));
+    const fromList = unique.filter((id) => isImageModel(id));
+    // Fallback suggestions for images if nothing detected
+    const fallback = ['flux', 'sdxl'];
+    return fromList.length ? fromList : fallback;
+  }, [allModels]);
 
   const handleSave = () => {
     setSaving(true);
@@ -75,35 +99,61 @@ export default function SettingsPage() {
     }
   };
 
-  const handleTest = async () => {
+  const loadModels = async (silent = false) => {
     if (!g4fBaseUrl) {
-      toast.error('Укажите базовый URL (например, https://host.g4f.dev/v1)');
+      if (!silent) toast.error('Укажите базовый URL (например, https://host.g4f.dev/v1)');
       return;
     }
-    setTesting(true);
+    setLoadingModels(true);
     try {
       const res = await fetch('/api/internal/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ baseUrl: g4fBaseUrl })
       });
-
       const data = await res.json();
 
       if (!res.ok) {
         const statusInfo = data?.status ? `HTTP ${data.status}` : `HTTP ${res.status}`;
         const reason = data?.error || data?.statusText || 'Проверка не удалась';
-        toast.error(`${reason}: ${statusInfo}`);
+        if (!silent) toast.error(`${reason}: ${statusInfo}`);
         return;
       }
 
-      const count = typeof data?.count === 'number' ? data.count : 0;
-      toast.success(`Доступно моделей: ${count}`);
+      const list = Array.isArray(data?.data) ? data.data : [];
+      setAllModels(list);
+      if (!silent) toast.success(`Доступно моделей: ${data?.count ?? list.length}`);
+
+      // If current selections are empty, try to preselect first items
+      if (!g4fTextModel && list.length) {
+        const firstText = list.map(getModelId).find((id: string) => id && !isImageModel(id));
+        if (firstText) setG4fTextModel(firstText);
+      }
+      if (!g4fImageModel) {
+        const firstImage = list.map(getModelId).find((id: string) => id && isImageModel(id));
+        if (firstImage) setG4fImageModel(firstImage);
+      }
     } catch (e: any) {
-      toast.error(`Ошибка проверки: ${e?.message || 'неизвестная ошибка'}`);
+      if (!silent) toast.error(`Ошибка загрузки моделей: ${e?.message || 'неизвестная ошибка'}`);
     } finally {
-      setTesting(false);
+      setLoadingModels(false);
     }
+  };
+
+  // Debounced auto-load models when base URL changes
+  useEffect(() => {
+    if (!g4fBaseUrl) return;
+    const isValid = /^https?:\/\//i.test(g4fBaseUrl);
+    if (!isValid) return;
+    const t = setTimeout(() => {
+      loadModels(true);
+    }, 700);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [g4fBaseUrl]);
+
+  const handleTest = async () => {
+    await loadModels(false);
   };
 
   return (
@@ -141,12 +191,40 @@ export default function SettingsPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="g4fTextModel">Модель текста</Label>
-              <Input id="g4fTextModel" placeholder="например: gpt-4o-mini, llama-3.1-70b" value={g4fTextModel} onChange={(e) => setG4fTextModel(e.target.value)} />
+              {/* Select with loaded models */}
+              <Select value={g4fTextModel} onValueChange={setG4fTextModel}>
+                <SelectTrigger id="g4fTextModel" className="w-full">
+                  <SelectValue placeholder={loadingModels ? 'Загрузка моделей…' : (textModels.length ? 'Выберите модель' : 'Нет загруженных моделей')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">По умолчанию провайдера</SelectItem>
+                  {/* ensure current value appears even if not in fetched list */}
+                  {g4fTextModel && !textModels.includes(g4fTextModel) && (
+                    <SelectItem value={g4fTextModel}>{g4fTextModel} (текущее)</SelectItem>
+                  )}
+                  {textModels.map((m) => (
+                    <SelectItem key={m} value={m}>{m}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <p className="text-xs text-muted-foreground">Оставьте пустым, чтобы использовать модель по умолчанию провайдера</p>
             </div>
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="g4fImageModel">Модель изображений</Label>
-              <Input id="g4fImageModel" placeholder="например: flux, sdxl" value={g4fImageModel} onChange={(e) => setG4fImageModel(e.target.value)} />
+              <Select value={g4fImageModel} onValueChange={setG4fImageModel}>
+                <SelectTrigger id="g4fImageModel" className="w-full">
+                  <SelectValue placeholder={loadingModels ? 'Загрузка моделей…' : (imageModels.length ? 'Выберите модель' : 'Нет загруженных моделей')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">По умолчанию провайдера</SelectItem>
+                  {g4fImageModel && !imageModels.includes(g4fImageModel) && (
+                    <SelectItem value={g4fImageModel}>{g4fImageModel} (текущее)</SelectItem>
+                  )}
+                  {imageModels.map((m) => (
+                    <SelectItem key={m} value={m}>{m}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <div className="flex gap-2 mt-4">
@@ -154,7 +232,7 @@ export default function SettingsPage() {
               {saving ? 'Сохранение...' : 'Сохранить настройки'}
             </Button>
             <Button variant="outline" onClick={handleTest} disabled={testing || !g4fBaseUrl}>
-              {testing ? 'Проверка...' : 'Проверить список моделей'}
+              {testing || loadingModels ? 'Загрузка…' : 'Обновить список моделей'}
             </Button>
           </div>
         </Card>
@@ -170,7 +248,7 @@ export default function SettingsPage() {
               <ExternalLink className="h-4 w-4 mr-2" /> Ollama (простая установка локальных LLM)
             </Button>
             <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://ollama.com/library')}>
-              <ExternalLink className="h-4 w-4 mr-2" /> Каталог моделей Ollama (Llama 3.1, Mistral и др.)
+              <ExternalLink className="h-4 w-4 mr-2" /> Каталог моделей Ollama (Llama 3.1, Mistrал и др.)
             </Button>
             <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://huggingface.co/black-forest-labs/FLUX.1-dev')}>
               <ExternalLink className="h-4 w-4 mr-2" /> FLUX.1 (генерация изображений)
