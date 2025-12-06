@@ -192,12 +192,12 @@ export default function SettingsPage() {
             <div className="space-y-2">
               <Label htmlFor="g4fTextModel">Модель текста</Label>
               {/* Select with loaded models */}
-              <Select value={g4fTextModel} onValueChange={setG4fTextModel}>
+              <Select value={g4fTextModel || undefined} onValueChange={(v) => setG4fTextModel(v === '__clear__' ? '' : v)}>
                 <SelectTrigger id="g4fTextModel" className="w-full">
                   <SelectValue placeholder={loadingModels ? 'Загрузка моделей…' : (textModels.length ? 'Выберите модель' : 'Нет загруженных моделей')} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">По умолчанию провайдера</SelectItem>
+                  <SelectItem value="__clear__">Сбросить выбор (по умолчанию провайдера)</SelectItem>
                   {/* ensure current value appears even if not in fetched list */}
                   {g4fTextModel && !textModels.includes(g4fTextModel) && (
                     <SelectItem value={g4fTextModel}>{g4fTextModel} (текущее)</SelectItem>
@@ -211,12 +211,12 @@ export default function SettingsPage() {
             </div>
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="g4fImageModel">Модель изображений</Label>
-              <Select value={g4fImageModel} onValueChange={setG4fImageModel}>
+              <Select value={g4fImageModel || undefined} onValueChange={(v) => setG4fImageModel(v === '__clear__' ? '' : v)}>
                 <SelectTrigger id="g4fImageModel" className="w-full">
                   <SelectValue placeholder={loadingModels ? 'Загрузка моделей…' : (imageModels.length ? 'Выберите модель' : 'Нет загруженных моделей')} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">По умолчанию провайдера</SelectItem>
+                  <SelectItem value="__clear__">Сбросить выбор (по умолчанию провайдера)</SelectItem>
                   {g4fImageModel && !imageModels.includes(g4fImageModel) && (
                     <SelectItem value={g4fImageModel}>{g4fImageModel} (текущее)</SelectItem>
                   )}
