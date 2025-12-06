@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -18,6 +18,9 @@ import {
   Globe,
   Shield
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { toast } from 'sonner';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -29,6 +32,71 @@ export default function SettingsPage() {
       window.parent.postMessage({ type: "OPEN_EXTERNAL_URL", data: { url } }, "*");
     } else {
       window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  // Local models config (stored in localStorage under ai_api_keys)
+  const [g4fBaseUrl, setG4fBaseUrl] = useState('');
+  const [g4fTextModel, setG4fTextModel] = useState('');
+  const [g4fImageModel, setG4fImageModel] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('ai_api_keys');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setG4fBaseUrl(parsed.g4f_base_url || '');
+        setG4fTextModel(parsed.g4f_text_model || '');
+        setG4fImageModel(parsed.g4f_image_model || '');
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleSave = () => {
+    setSaving(true);
+    try {
+      const existing = (() => {
+        try { return JSON.parse(localStorage.getItem('ai_api_keys') || '{}'); } catch { return {}; }
+      })();
+      const payload = {
+        ...existing,
+        g4f_base_url: g4fBaseUrl || undefined,
+        g4f_text_model: g4fTextModel || undefined,
+        g4f_image_model: g4fImageModel || undefined,
+      };
+      localStorage.setItem('ai_api_keys', JSON.stringify(payload));
+      toast.success('Настройки сохранены');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    if (!g4fBaseUrl) {
+      toast.error('Укажите базовый URL (например, https://host.g4f.dev/v1)');
+      return;
+    }
+    setTesting(true);
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`${g4fBaseUrl.replace(/\/$/, '')}/models`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) {
+        toast.error(`Проверка не удалась: HTTP ${res.status}`);
+        return;
+      }
+      const data = await res.json();
+      const count = Array.isArray(data?.data) ? data.data.length : 0;
+      toast.success(`Доступно моделей: ${count}`);
+    } catch (e: any) {
+      toast.error(`Ошибка проверки: ${e?.message || 'неизвестная ошибка'}`);
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -55,7 +123,62 @@ export default function SettingsPage() {
       </div>
 
       <div className="max-w-4xl mx-auto p-3 md:p-6 lg:p-8 space-y-4 md:space-y-6">
+
+        {/* Local models configuration */}
+        <Card className="p-5 md:p-6 bg-white/70 dark:bg-gray-800/60 border-2 border-purple-200 dark:border-purple-800">
+          <h2 className="text-lg md:text-xl font-semibold mb-4">Локальные модели / Кастомный провайдер</h2>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="g4fBaseUrl">Базовый URL API</Label>
+              <Input id="g4fBaseUrl" placeholder="например: https://host.g4f.dev/v1" value={g4fBaseUrl} onChange={(e) => setG4fBaseUrl(e.target.value)} />
+              <p className="text-xs text-muted-foreground">OpenAI-совместимый /models и /chat/completions</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="g4fTextModel">Модель текста</Label>
+              <Input id="g4fTextModel" placeholder="например: gpt-4o-mini, llama-3.1-70b" value={g4fTextModel} onChange={(e) => setG4fTextModel(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Оставьте пустым, чтобы использовать модель по умолчанию провайдера</p>
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="g4fImageModel">Модель изображений</Label>
+              <Input id="g4fImageModel" placeholder="например: flux, sdxl" value={g4fImageModel} onChange={(e) => setG4fImageModel(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <Button onClick={handleSave} disabled={saving} className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">
+              {saving ? 'Сохранение...' : 'Сохранить настройки'}
+            </Button>
+            <Button variant="outline" onClick={handleTest} disabled={testing || !g4fBaseUrl}>
+              {testing ? 'Проверка...' : 'Проверить список моделей'}
+            </Button>
+          </div>
+        </Card>
         
+        {/* Downloads / Models Links */}
+        <Card className="p-6">
+          <h2 className="text-xl font-semibold mb-4">⬇️ Ссылки на загрузку моделей и инструментов</h2>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://lmstudio.ai')}>
+              <ExternalLink className="h-4 w-4 mr-2" /> LM Studio (настольный запуск LLM)
+            </Button>
+            <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://ollama.com')}>
+              <ExternalLink className="h-4 w-4 mr-2" /> Ollama (простая установка локальных LLM)
+            </Button>
+            <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://ollama.com/library')}>
+              <ExternalLink className="h-4 w-4 mr-2" /> Каталог моделей Ollama (Llama 3.1, Mistral и др.)
+            </Button>
+            <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://huggingface.co/black-forest-labs/FLUX.1-dev')}>
+              <ExternalLink className="h-4 w-4 mr-2" /> FLUX.1 (генерация изображений)
+            </Button>
+            <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0')}>
+              <ExternalLink className="h-4 w-4 mr-2" /> Stable Diffusion XL (SDXL)
+            </Button>
+            <Button variant="outline" className="justify-start h-auto py-3" onClick={() => handleExternalLink('https://civitai.com')}>
+              <ExternalLink className="h-4 w-4 mr-2" /> Civitai (сообщество моделей/LoRA)
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground mt-3">Если нужна конкретная ссылка/модель — напишите её название, и я добавлю рабочую ссылку.</p>
+        </Card>
+
         {/* Main Info Card - g4f Powered */}
         <Card className="p-6 md:p-8 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-2 border-green-200 dark:border-green-800">
           <div className="flex items-start gap-4 mb-6">
@@ -252,7 +375,7 @@ export default function SettingsPage() {
               <div>
                 <h3 className="font-semibold mb-1">Создаёте AI личности</h3>
                 <p className="text-sm text-muted-foreground">
-                  Задаёте имя, характер и внешность (генерируется автоматически)
+                  Задаёте имя, характер и внешность (генерируется автоматически или загружаете фото)
                 </p>
               </div>
             </div>
@@ -288,11 +411,30 @@ export default function SettingsPage() {
               <div>
                 <h3 className="font-semibold mb-1">Генерация контента</h3>
                 <p className="text-sm text-muted-foreground">
-                  При необходимости автоматически создаются изображения для иллюстрации происходящего
+                  После реплик персонажей автоматически создаются изображения, если уместно
                 </p>
               </div>
             </div>
           </div>
+        </Card>
+
+        {/* TODO List */}
+        <Card className="p-6">
+          <h2 className="text-xl font-semibold mb-4">✅ Список задач (актуальный)</h2>
+          <ul className="space-y-2 text-sm">
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Локализация RU интерфейса и диалогов — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Персонажи говорят МЕЖДУ СОБОЙ, без очередности — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Рассказчик — невидимый голос, вклинивается по месту — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Раздельные пузыри сообщений — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Генерация фото ПОСЛЕ каждой реплики персонажа — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Хранение чатов и личностей в localStorage — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Загрузка аватара + мультизагрузка фото (основа для точного 3D-аватара) — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-green-500" /> Конфигурация локальных моделей (base URL, модели) — выполнено</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-yellow-500" /> Использовать ref-фото для консистентной идентичности в генерации — план (промпты уже учитывают, нужны локальные инструменты: IP-Adapter/LoRA)</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-yellow-500" /> 3D-аватар (мультивидовые позы/ракурсы) — план (интеграция с InstantID/SMPL/AnimateDiff)</li>
+            <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 rounded-full bg-yellow-500" /> Полная оффлайн-работа на мобильных — план (подключение к локальному бэкенду/он-дивайс)</li>
+          </ul>
+          <p className="text-xs text-muted-foreground mt-3">Если нужно добавить ещё пункты — напишите, я расширю список (ничего не удаляя).</p>
         </Card>
 
         {/* Back Button */}

@@ -21,6 +21,7 @@ export default function CreatePersonalityPage() {
   const [traits, setTraits] = useState<string[]>([]);
   const [avatarPrompt, setAvatarPrompt] = useState('');
   const [avatar, setAvatar] = useState('');
+  const [avatarGallery, setAvatarGallery] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -46,6 +47,20 @@ export default function CreatePersonalityPage() {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleMultiUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    files.forEach((file) => {
+      if (!file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAvatarGallery(prev => [...prev, reader.result as string]);
+      };
+      reader.readAsDataURL(file);
+    });
   };
 
   const handleGenerateAvatar = async () => {
@@ -86,6 +101,7 @@ export default function CreatePersonalityPage() {
       traits,
       description: description.trim(),
       createdAt: new Date().toISOString(),
+      avatarGallery: avatarGallery.length ? avatarGallery : undefined,
     };
 
     storage.savePersonality(newPersonality);
@@ -209,6 +225,27 @@ export default function CreatePersonalityPage() {
                   </div>
                 </div>
               )}
+
+              {/* Multi-Photo Upload for 3D/Reference */}
+              <div className="space-y-2">
+                <Label htmlFor="multiUpload" className="text-sm md:text-base">Загрузить несколько фото (для точного 3D-аватара)</Label>
+                <Input id="multiUpload" type="file" multiple accept="image/*" onChange={handleMultiUpload} className="text-sm md:text-base" />
+                {avatarGallery.length > 0 && (
+                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mt-2">
+                    {avatarGallery.map((img, idx) => (
+                      <div key={idx} className="relative group">
+                        <img src={img} alt={`ref-${idx}`} className="w-full h-16 object-cover rounded-md border" />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors rounded-md flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                          <Button size="xs" variant="secondary" onClick={() => setAvatar(img)} className="text-[10px] h-6">Сделать основным</Button>
+                          <Button size="icon" variant="destructive" className="h-6 w-6" onClick={() => setAvatarGallery(prev => prev.filter((_, i) => i !== idx))}>
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </Card>
 

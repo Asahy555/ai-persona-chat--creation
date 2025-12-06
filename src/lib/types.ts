@@ -6,6 +6,8 @@ export interface Personality {
   traits: string[];
   description: string;
   createdAt: string;
+  // Дополнительно: галерея исходных фото для построения точного 3D-аватара/референсов
+  avatarGallery?: string[];
 }
 
 export interface Message {

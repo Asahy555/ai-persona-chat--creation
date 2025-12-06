@@ -116,7 +116,7 @@ export default function ChatPage() {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
-      // 2. Добавляем ответы персонажей с описаниями рассказчика
+      // 2. Добавляем ответы персонажей с описаниями рассказчика + генерируем фото ПОСЛЕ каждого ответа
       for (const charResponse of narratorResponse.characterResponses) {
         const personality = personalities.find(p => p.id === charResponse.characterId);
         if (!personality) continue;
@@ -181,19 +181,16 @@ export default function ChatPage() {
           storage.saveChat(currentChat);
           await new Promise(resolve => setTimeout(resolve, 300));
         }
-      }
 
-      // 3. Генерируем изображение если рассказчик решил
-      if (narratorResponse.shouldGenerateImage && narratorResponse.imagePrompt && narratorResponse.imageCharacterId) {
-        const personality = personalities.find(p => p.id === narratorResponse.imageCharacterId);
-        if (personality) {
+        // 2d. Генерируем изображение ДЛЯ КАЖДОГО персонажа после его ответа
+        if (charResponse.imagePrompt) {
           setIsGeneratingImage(true);
           try {
             const imageResponse = await fetch('/api/generate-image-service', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                prompt: narratorResponse.imagePrompt,
+                prompt: charResponse.imagePrompt,
                 negativePrompt: 'low quality, blurry, distorted, deformed',
                 width: 512,
                 height: 512,
@@ -221,16 +218,17 @@ export default function ChatPage() {
 
                 setChat(currentChat);
                 storage.saveChat(currentChat);
+                await new Promise(resolve => setTimeout(resolve, 200));
               }
             }
           } catch (error) {
             console.error('Ошибка генерации изображения:', error);
-            toast.error('Не удалось сгенерировать изображение');
           } finally {
             setIsGeneratingImage(false);
           }
         }
       }
+
     } catch (error) {
       console.error('Ошибка отправки сообщения:', error);
       toast.error('Не удалось отправить сообщение. Проверьте настройки API.');

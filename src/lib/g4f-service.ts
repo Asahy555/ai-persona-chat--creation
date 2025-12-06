@@ -97,8 +97,22 @@ export async function generateTextG4F(
 ): Promise<G4FTextResponse> {
   let lastError: Error | null = null;
 
+  // Собираем приоритеты: сперва пользовательский OpenAI-совместимый эндпоинт, затем дефолтные
+  const endpoints = (() => {
+    const arr = [...TEXT_ENDPOINTS];
+    if (config.baseUrl) {
+      const base = config.baseUrl.replace(/\/$/, '');
+      arr.unshift({
+        name: 'custom-base',
+        url: `${base}/chat/completions`,
+        model: config.textModel || 'gpt-4o-mini',
+      } as any);
+    }
+    return arr;
+  })();
+
   // Пробуем каждый эндпоинт по очереди
-  for (const endpoint of TEXT_ENDPOINTS) {
+  for (const endpoint of endpoints) {
     try {
       console.log(`🤖 G4F: Trying ${endpoint.name}...`);
 
@@ -112,18 +126,25 @@ export async function generateTextG4F(
       }
       fullPrompt += userMessages.map(m => m.content).join('\n');
 
+      // Для custom-base используем заданную модель, для остальных — модель эндпоинта
+      const modelToUse = endpoint.name === 'custom-base' && config.textModel ? config.textModel : endpoint.model;
+
       const requestBody = {
         messages: [{ role: 'user', content: fullPrompt }],
-        model: endpoint.model, // ВАЖНО: используем только модель эндпоинта
+        model: modelToUse, // ВАЖНО: модель
         max_tokens: 2048,
-        // НЕ ИСПОЛЬЗУЕМ temperature для pollinations - они не поддерживают
       };
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (endpoint.name === 'custom-base' && config.apiKey) {
+        headers['Authorization'] = `Bearer ${config.apiKey}`;
+      }
 
       const response = await fetch(endpoint.url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify(requestBody),
         signal: AbortSignal.timeout(45000),
       });
@@ -132,7 +153,6 @@ export async function generateTextG4F(
         const errorText = await response.text();
         console.log(`❌ ${endpoint.name} HTTP ${response.status}: ${errorText.substring(0, 150)}`);
         
-        // Если rate limit (429), ждём немного и пробуем следующий
         if (response.status === 429) {
           console.log(`⏳ Rate limited, will try next endpoint...`);
         }
@@ -173,13 +193,12 @@ export async function generateTextG4F(
 
       return {
         content: content.trim(),
-        model: endpoint.model,
+        model: modelToUse,
         provider: endpoint.name,
       };
     } catch (error: any) {
       console.log(`❌ ${endpoint.name} failed:`, error.message);
       lastError = error;
-      // Продолжаем пробовать следующий эндпоинт
       continue;
     }
   }
@@ -198,12 +217,26 @@ export async function generateImageG4F(
 ): Promise<G4FImageResponse> {
   let lastError: Error | null = null;
 
-  // Пробуем каждый эндпоинт по очереди
-  for (const endpoint of IMAGE_ENDPOINTS) {
+  // Пробуем каждый эндпоинт по очереди (кастомный — первым)
+  const endpoints = (() => {
+    const arr = [...IMAGE_ENDPOINTS];
+    if (config.baseUrl) {
+      const base = config.baseUrl.replace(/\/$/, '');
+      arr.unshift({
+        name: 'custom-base',
+        url: `${base}/images/generations`,
+        model: config.imageModel || 'flux',
+        direct: false,
+      } as any);
+    }
+    return arr;
+  })();
+
+  for (const endpoint of endpoints) {
     try {
       console.log(`🎨 G4F: Trying ${endpoint.name} for image generation...`);
 
-      if (endpoint.direct) {
+      if ((endpoint as any).direct) {
         // Прямой URL (Pollinations - самый надежный)
         const encodedPrompt = encodeURIComponent(prompt);
         const imageUrl = `${endpoint.url}/${encodedPrompt}?width=1024&height=1024&nologo=true&model=flux&seed=${Date.now()}`;
@@ -216,20 +249,23 @@ export async function generateImageG4F(
           provider: endpoint.name,
         };
       } else {
-        // API endpoint (OpenAI-compatible)
+        // OpenAI-compatible /images/generations
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (endpoint.name === 'custom-base' && config.apiKey) {
+          headers['Authorization'] = `Bearer ${config.apiKey}`;
+        }
+
         const response = await fetch(endpoint.url, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers,
           body: JSON.stringify({
-            model: config.imageModel || endpoint.model || 'flux',
+            model: endpoint.name === 'custom-base' && config.imageModel ? config.imageModel : (endpoint as any).model || 'flux',
             prompt,
             n: 1,
             size: '1024x1024',
             response_format: 'url',
           }),
-          signal: AbortSignal.timeout(90000), // 90 seconds for image generation
+          signal: AbortSignal.timeout(90000),
         });
 
         if (!response.ok) {
@@ -249,14 +285,13 @@ export async function generateImageG4F(
 
         return {
           url: data.data[0].url,
-          model: endpoint.model || 'flux',
+          model: (endpoint as any).model || 'flux',
           provider: endpoint.name,
         };
       }
     } catch (error: any) {
       console.log(`❌ ${endpoint.name} failed:`, error.message);
       lastError = error;
-      // Продолжаем пробовать следующий эндпоинт
       continue;
     }
   }

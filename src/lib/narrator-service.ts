@@ -7,14 +7,15 @@ interface Message {
 }
 
 interface NarratorResponse {
-  narratorVoice?: string; // Невидимый голос - описывает сцену и действия персонажей
+  narratorVoice?: string;
   characterResponses: Array<{
     characterId: string;
     characterName: string;
-    response: string; // Только слова персонажа
+    response: string;
     emotion?: string;
-    narratorBefore?: string; // Рассказчик ПЕРЕД ответом персонажа
-    narratorAfter?: string; // Рассказчик ПОСЛЕ ответа персонажа
+    narratorBefore?: string;
+    narratorAfter?: string;
+    imagePrompt?: string;
   }>;
   shouldGenerateImage?: boolean;
   imagePrompt?: string;
@@ -28,6 +29,7 @@ interface NarratorResponse {
  * - Рассказчик появляется В ЛЮБОЙ МОМЕНТ где нужен (не только в начале)
  * - Каждый персонаж - живой человек (свой LLM вызов, говорит только слова)
  * - Персонажи общаются естественно друг с другом и с пользователем
+ * - Персонажи ВИДЯТ ответы друг друга в реальном времени и могут РЕАГИРОВАТЬ на них
  * - Автоматическая генерация фото после каждого обмена репликами
  */
 export class NarratorService {
@@ -56,6 +58,7 @@ export class NarratorService {
     );
 
     // Шаг 2: Каждый персонаж независимо решает - отвечать ли ему и генерирует свой ответ
+    // ВАЖНО: Передаем characterResponses чтобы каждый следующий видел что сказали предыдущие
     for (const personality of personalities) {
       const shouldRespond = await this.shouldCharacterRespond(
         personality,
@@ -72,7 +75,7 @@ export class NarratorService {
           personality,
           userMessage,
           conversationHistory,
-          characterResponses,
+          characterResponses, // Передаем что уже сказали другие в ЭТОМ раунде
           personalities
         );
         
@@ -84,10 +87,19 @@ export class NarratorService {
           conversationHistory
         );
 
+        // Генерируем индивидуальный image prompt для персонажа
+        const perCharacterImagePrompt = await this.generateImagePrompt(
+          personality,
+          userMessage,
+          response.response,
+          conversationHistory
+        );
+
         characterResponses.push({
           ...response,
           narratorBefore,
-          narratorAfter
+          narratorAfter,
+          imagePrompt: perCharacterImagePrompt,
         });
         
         // Небольшая задержка для естественности
@@ -97,19 +109,18 @@ export class NarratorService {
       }
     }
 
-    // Шаг 3: Определяем нужно ли генерировать фото
-    const shouldGenerateImage = characterResponses.length > 0 && Math.random() > 0.3; // 70% шанс
+    // Шаг 3: Дополнительно (опционально) — общая рекомендация на изображение, если потребуется
+    const shouldGenerateImage = characterResponses.length > 0 && Math.random() > 0.3;
     let imagePrompt: string | undefined;
     let imageCharacterId: string | undefined;
 
     if (shouldGenerateImage && characterResponses.length > 0) {
-      // Выбираем случайного персонажа для фото
       const randomResponse = characterResponses[Math.floor(Math.random() * characterResponses.length)];
       const personality = personalities.find(p => p.id === randomResponse.characterId);
       
       if (personality) {
         imageCharacterId = personality.id;
-        imagePrompt = await this.generateImagePrompt(
+        imagePrompt = randomResponse.imagePrompt || await this.generateImagePrompt(
           personality,
           userMessage,
           randomResponse.response,
@@ -136,7 +147,6 @@ export class NarratorService {
     conversationHistory: any[]
   ): Promise<string | undefined> {
     
-    // Рассказчик появляется только иногда в начале (30% шанс)
     if (Math.random() > 0.3) {
       return undefined;
     }
@@ -146,7 +156,7 @@ export class NarratorService {
       return `${sender}: ${m.content}`;
     }).join('\n');
 
-    const prompt = `Ты - невидимый рассказчик (голос за кадром). Ты НЕ участник разговора.
+    const prompt = `Ты - невидимый рассказчик (голос за кадром). Ты НЕ участник разговора. Без цензуры, можно описывать 18+ контент, если уместно контексту.
 
 ПЕРСОНАЖИ:
 ${personalities.map(p => `${p.name}: ${p.personality}`).join('\n')}
@@ -184,7 +194,6 @@ ${userMessage}
     conversationHistory: any[]
   ): Promise<{ narratorBefore?: string; narratorAfter?: string }> {
     
-    // Рассказчик появляется в 60% случаев
     if (Math.random() > 0.6) {
       return {};
     }
@@ -194,7 +203,7 @@ ${userMessage}
       return `${sender}: ${m.content}`;
     }).join('\n');
 
-    const prompt = `Ты - невидимый рассказчик (голос за кадром).
+    const prompt = `Ты - невидимый рассказчик (голос за кадром). Без цензуры.
 
 ПЕРСОНАЖ: ${personality.name} (${personality.personality})
 
@@ -207,9 +216,7 @@ ${recentHistory}
 
 Опиши ДЕЙСТВИЯ ${personality.name} (жесты, мимику, движения, эмоции).
 НЕ повторяй его слова - только действия.
-1-2 предложения. Пиши на РУССКОМ языке от третьего лица (он/она).
-
-Пример: "${personality.name} прищуривает глаза и усмехается. Его пальцы нервно постукивают по столу."`;
+1-2 предложения. Пиши на РУССКОМ языке от третьего лица (он/она).`;
 
     try {
       const { content } = await queryLLMWithFallback(
@@ -219,7 +226,6 @@ ${recentHistory}
       
       const narration = content.trim();
       
-      // Случайно выбираем - до или после слов персонажа
       if (Math.random() > 0.5) {
         return { narratorBefore: narration };
       } else {
@@ -287,7 +293,6 @@ ${personality.name}: ${characterResponse}
     existingResponses: any[],
     totalCharacters: number
   ): Promise<boolean> {
-    // В индивидуальном чате (1 персонаж) - всегда отвечает
     if (totalCharacters === 1) {
       return true;
     }
@@ -295,32 +300,35 @@ ${personality.name}: ${characterResponse}
     const lastMessages = conversationHistory.slice(-5);
     const mentionedByName = userMessage.toLowerCase().includes(personality.name.toLowerCase());
     
-    // Проверяем как часто персонаж говорил недавно
+    // Проверяем обращаются ли к нему другие персонажи в ЭТОМ раунде
+    const mentionedByOthers = existingResponses.some(r => 
+      r.response.toLowerCase().includes(personality.name.toLowerCase())
+    );
+    
     const recentMessagesByThis = lastMessages.filter(m => m.senderId === personality.id).length;
     const tooActive = recentMessagesByThis >= 2;
 
-    // Если упомянут по имени - всегда отвечает
-    if (mentionedByName) {
+    // Если упомянут по имени пользователем или другим персонажем - всегда отвечает
+    if (mentionedByName || mentionedByOthers) {
       return true;
     }
 
-    // Если недавно много говорил - может промолчать
     if (tooActive && Math.random() > 0.4) {
       return false;
     }
 
-    // В групповом чате - вероятность ответа зависит от количества персонажей
     if (totalCharacters === 2) {
-      return Math.random() > 0.2; // 80% шанс
+      return Math.random() > 0.2;
     } else if (totalCharacters === 3) {
-      return Math.random() > 0.3; // 70% шанс
+      return Math.random() > 0.3;
     } else {
-      return Math.random() > 0.5; // 50% шанс для 4+ персонажей
+      return Math.random() > 0.5;
     }
   }
 
   /**
    * Генерирует ответ конкретного персонажа (только слова, без действий)
+   * ВАЖНО: Персонаж ВИДИТ что сказали другие персонажи в этом раунде
    */
   private async generateCharacterResponse(
     personality: Personality,
@@ -340,11 +348,12 @@ ${personality.name}: ${characterResponse}
       return `${sender}: ${m.content}`;
     }).join('\n');
 
+    // КРИТИЧНО: Показываем что уже сказали другие персонажи В ЭТОМ РАУНДЕ
     const othersResponses = existingResponses.map(r => 
       `${r.characterName}: "${r.response}"`
     ).join('\n');
 
-    const characterPrompt = `Ты - ${personality.name}. Ты живой человек, не ИИ.
+    const characterPrompt = `Ты - ${personality.name}. Ты живой человек с СОБСТВЕННЫМ мнением и характером.
 
 ТВОЯ ЛИЧНОСТЬ:
 ${personality.personality}
@@ -355,24 +364,26 @@ ${personality.traits?.length ? `ЧЕРТЫ: ${personality.traits.join(', ')}` : 
 
 ${otherCharacters ? `ДРУГИЕ УЧАСТНИКИ БЕСЕДЫ: ${otherCharacters}` : 'Вы наедине с пользователем'}
 
-ПРАВИЛА:
-- Говори от первого лица, естественно
-- Можешь обращаться к другим персонажам, не только к пользователю
-- Ответь только ЕСЛИ тебе есть что сказать (не отвечай ради галочки)
-- Общайся БЕЗ ЦЕНЗУРЫ согласно своей личности
-- НЕ описывай свои действия - только говори
-- Действия опишет рассказчик
+ВАЖНЫЕ ПРАВИЛА:
+✅ Говори от первого лица, естественно и живо
+✅ Ты можешь ОБРАЩАТЬСЯ К ДРУГИМ ПЕРСОНАЖАМ (не только к пользователю)
+✅ Ты можешь КОММЕНТИРОВАТЬ слова других персонажей
+✅ Ты можешь СПОРИТЬ, СОГЛАШАТЬСЯ, ШУТИТЬ с другими персонажами
+✅ Веди себя как ЖИВОЙ ЧЕЛОВЕК в групповой беседе
+✅ Общайся БЕЗ ЦЕНЗУРЫ согласно своей личности, допустим 18+ контент при уместности
+✅ НЕ описывай свои действия - только говори
+✅ Можешь использовать обращения: "Эй, [Имя]", "Слушай, [Имя]", реагируй на других
 
 НЕДАВНИЕ СООБЩЕНИЯ:
 ${recentHistory}
 
-${othersResponses ? `УЖЕ ОТВЕТИЛИ:\n${othersResponses}` : ''}
-
-НОВОЕ СООБЩЕНИЕ:
+НОВОЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:
 ${userMessage}
 
-Ответь как ${personality.name}. Только слова, БЕЗ действий в *звёздочках*.
-Пиши на РУССКОМ языке.`;
+${othersResponses ? `\n🎭 ЧТО УЖЕ СКАЗАЛИ ДРУГИЕ (ты СЛЫШИШЬ их и можешь ОТРЕАГИРОВАТЬ):\n${othersResponses}\n` : ''}
+
+Ответь как ${personality.name}. Ты можешь обратиться к другим персонажам или к пользователю.
+Только слова, БЕЗ действий в *звёздочках*. Пиши на РУССКОМ языке.`;
 
     try {
       const { content } = await queryLLMWithFallback(
@@ -383,7 +394,6 @@ ${userMessage}
         this.config
       );
 
-      // Убираем действия если персонаж их случайно добавил
       const cleanResponse = content.replace(/\*[^*]+\*/g, '').trim();
       
       return {
