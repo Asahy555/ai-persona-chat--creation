@@ -20,7 +20,8 @@ export default function ChatPage() {
   const [personalities, setPersonalities] = useState<Personality[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  // Отслеживаем генерацию изображений по персонажам
+  const [generatingImageFor, setGeneratingImageFor] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Индикаторы набора для нескольких личностей
   const [typingIds, setTypingIds] = useState<Set<string>>(new Set());
@@ -66,8 +67,6 @@ export default function ChatPage() {
         storage.saveChat(updated);
         return updated;
       });
-      // небольшая задержка для эффекта печати
-      // более быстрый набор на мобильных
       await new Promise(r => setTimeout(r, speed));
     }
   };
@@ -141,7 +140,7 @@ export default function ChatPage() {
         await new Promise(resolve => setTimeout(resolve, 250));
       }
 
-      // 2. Добавляем ответы персонажей с описаниями рассказчика + генерируем фото ПОСЛЕ каждого ответа (с плавной печатью)
+      // 2. Добавляем ответы персонажей с описаниями рассказчика + генерируем фото ПОСЛЕ каждого ответа
       for (const charResponse of narratorResponse.characterResponses) {
         const personality = personalities.find(p => p.id === charResponse.characterId);
         if (!personality) continue;
@@ -216,19 +215,25 @@ export default function ChatPage() {
           await new Promise(resolve => setTimeout(resolve, 220));
         }
 
-        // 2d. Генерируем изображение ДЛЯ КАЖДОГО персонажа после его ответа
+        // 2d. КРИТИЧНО: Генерируем изображение ДЛЯ КАЖДОГО персонажа после его ответа
+        // Теперь imagePrompt ВСЕГДА присутствует для каждого персонажа
         if (charResponse.imagePrompt) {
           const apiCfg = getApiConfig();
-          setIsGeneratingImage(true);
+          
+          // Устанавливаем индикатор генерации для этого персонажа
+          setGeneratingImageFor(prev => new Set([...prev, personality.id]));
+          
           try {
+            console.log(`🎨 Генерация изображения для ${personality.name}...`);
+            
             const imageResponse = await fetch('/api/generate-image-service', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 prompt: charResponse.imagePrompt,
-                negativePrompt: 'low quality, blurry, distorted, deformed',
-                width: 512,
-                height: 512,
+                negativePrompt: 'low quality, blurry, distorted, deformed, ugly, censored',
+                width: 768,
+                height: 768,
                 apiConfig: apiCfg,
               }),
             });
@@ -236,11 +241,13 @@ export default function ChatPage() {
             if (imageResponse.ok) {
               const imageData = await imageResponse.json();
               if (imageData.imageUrl) {
+                console.log(`✅ Изображение для ${personality.name} сгенерировано:`, imageData.imageUrl.substring(0, 50) + '...');
+                
                 const imageMessage: Message = {
-                  id: `${Date.now()}-${personality.id}-image`,
+                  id: `${Date.now()}-${personality.id}-image-${Math.random()}`,
                   senderId: personality.id,
                   senderName: personality.name,
-                  content: '*отправляет фото*',
+                  content: '', // Пустой контент, только изображение
                   images: [imageData.imageUrl],
                   timestamp: new Date().toISOString(),
                 };
@@ -254,12 +261,22 @@ export default function ChatPage() {
                 setChat(currentChat);
                 storage.saveChat(currentChat);
                 await new Promise(resolve => setTimeout(resolve, 150));
+              } else {
+                console.warn(`⚠️ Изображение для ${personality.name} не получено (пустой URL)`);
               }
+            } else {
+              const errorText = await imageResponse.text();
+              console.error(`❌ Ошибка HTTP ${imageResponse.status} при генерации изображения для ${personality.name}:`, errorText);
             }
           } catch (error) {
-            console.error('Ошибка генерации изображения:', error);
+            console.error(`❌ Ошибка генерации изображения для ${personality.name}:`, error);
           } finally {
-            setIsGeneratingImage(false);
+            // Убираем индикатор генерации для этого персонажа
+            setGeneratingImageFor(prev => {
+              const next = new Set(prev);
+              next.delete(personality.id);
+              return next;
+            });
           }
         }
       }
@@ -269,27 +286,27 @@ export default function ChatPage() {
       toast.error('Не удалось отправить сообщение. Проверьте настройки API.');
     } finally {
       setIsLoading(false);
-      // очистить индикаторы набора на всякий случай
       setTypingIds(new Set());
+      setGeneratingImageFor(new Set());
     }
   };
 
   const handleGenerateImage = async (personalityId: string) => {
     const personality = personalities.find(p => p.id === personalityId);
-    if (!personality || isGeneratingImage || !chat) return;
+    if (!personality || generatingImageFor.has(personalityId) || !chat) return;
 
     const apiConfig = getApiConfig();
 
-    setIsGeneratingImage(true);
+    setGeneratingImageFor(prev => new Set([...prev, personalityId]));
     try {
       const response = await fetch('/api/generate-image-service', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: `${personality.personality}, ${personality.description}, полный рост или портрет, высокое качество`,
-          negativePrompt: 'low quality, blurry, distorted',
-          width: 512,
-          height: 512,
+          prompt: `detailed photo portrait of ${personality.name}, ${personality.personality}, ${personality.description || ''}, expressive face, professional photography, high quality, detailed, realistic`,
+          negativePrompt: 'low quality, blurry, distorted, ugly, censored',
+          width: 768,
+          height: 768,
           apiConfig,
         }),
       });
@@ -305,7 +322,7 @@ export default function ChatPage() {
           id: `${Date.now()}-${personality.id}-image`,
           senderId: personality.id,
           senderName: personality.name,
-          content: '*отправляет вам фото*',
+          content: '',
           images: [data.imageUrl],
           timestamp: new Date().toISOString(),
         };
@@ -327,7 +344,11 @@ export default function ChatPage() {
       console.error('Ошибка генерации изображения:', error);
       toast.error('Не удалось сгенерировать изображение. Проверьте настройки API.');
     } finally {
-      setIsGeneratingImage(false);
+      setGeneratingImageFor(prev => {
+        const next = new Set(prev);
+        next.delete(personalityId);
+        return next;
+      });
     }
   };
 
@@ -367,10 +388,14 @@ export default function ChatPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => handleGenerateImage(p.id)}
-                disabled={isGeneratingImage}
+                disabled={generatingImageFor.has(p.id)}
                 className="hidden md:flex"
               >
-                <Sparkles className="h-4 w-4 md:mr-2" />
+                {generatingImageFor.has(p.id) ? (
+                  <Loader2 className="h-4 w-4 md:mr-2 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 md:mr-2" />
+                )}
                 <span className="hidden lg:inline">Создать фото</span>
               </Button>
             ))}
@@ -379,10 +404,14 @@ export default function ChatPage() {
                 variant="outline"
                 size="icon"
                 onClick={() => handleGenerateImage(personalities[0].id)}
-                disabled={isGeneratingImage}
+                disabled={generatingImageFor.has(personalities[0].id)}
                 className="md:hidden"
               >
-                <Sparkles className="h-4 w-4" />
+                {generatingImageFor.has(personalities[0].id) ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
               </Button>
             )}
           </div>
@@ -429,10 +458,12 @@ export default function ChatPage() {
                       {message.senderName}
                     </p>
                   )}
-                  <p className="whitespace-pre-wrap break-words text-sm md:text-base">{message.content}</p>
+                  {message.content && (
+                    <p className="whitespace-pre-wrap break-words text-sm md:text-base">{message.content}</p>
+                  )}
                   
                   {message.images && message.images.length > 0 && (
-                    <div className="mt-2 md:mt-3 space-y-2">
+                    <div className={`${message.content ? 'mt-2 md:mt-3' : ''} space-y-2`}>
                       {message.images.map((img, idx) => (
                         <img
                           key={idx}
@@ -479,17 +510,22 @@ export default function ChatPage() {
             </div>
           )}
 
-          {(isGeneratingImage) && (
-            <div className="flex gap-2 md:gap-3">
-              <div className="h-8 w-8 md:h-10 md:w-10 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse" />
-              <Card className="p-3 md:p-4">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <p className="text-xs md:text-sm text-muted-foreground">
-                    Генерация изображения...
-                  </p>
-                </div>
-              </Card>
+          {/* Индикаторы генерации изображений для каждого персонажа */}
+          {generatingImageFor.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 md:gap-3 pl-10">
+              {[...generatingImageFor].map(id => {
+                const p = personalities.find(pp => pp.id === id);
+                if (!p) return null;
+                return (
+                  <div key={id} className="flex items-center gap-2 bg-white/80 dark:bg-gray-800/80 border rounded-full px-3 py-1">
+                    <Avatar className="h-5 w-5">
+                      <img src={p.avatar} alt={p.name} className="object-cover" />
+                    </Avatar>
+                    <Loader2 className="h-3 w-3 animate-spin text-purple-600" />
+                    <span className="text-xs text-muted-foreground">{p.name} создаёт фото…</span>
+                  </div>
+                );
+              })}
             </div>
           )}
 

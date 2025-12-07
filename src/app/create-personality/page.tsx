@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, Sparkles, X, Loader2, Upload } from 'lucide-react';
+import { ArrowLeft, Sparkles, X, Loader2, Upload, Image as ImageIcon } from 'lucide-react';
 import { storage } from '@/lib/storage';
 import { Personality } from '@/lib/types';
 
@@ -24,7 +24,6 @@ export default function CreatePersonalityPage() {
   const [avatarGallery, setAvatarGallery] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
 
   const handleAddTrait = () => {
     if (traitInput.trim() && !traits.includes(traitInput.trim())) {
@@ -40,10 +39,14 @@ export default function CreatePersonalityPage() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && file.type.startsWith('image/')) {
-      setUploadedFile(file);
       const reader = new FileReader();
       reader.onloadend = () => {
-        setAvatar(reader.result as string);
+        const result = reader.result as string;
+        setAvatar(result);
+        // Добавляем в галерею тоже
+        if (!avatarGallery.includes(result)) {
+          setAvatarGallery([result, ...avatarGallery]);
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -57,7 +60,16 @@ export default function CreatePersonalityPage() {
       if (!file.type.startsWith('image/')) return;
       const reader = new FileReader();
       reader.onloadend = () => {
-        setAvatarGallery(prev => [...prev, reader.result as string]);
+        const result = reader.result as string;
+        setAvatarGallery(prev => {
+          // Избегаем дубликатов
+          if (prev.includes(result)) return prev;
+          return [...prev, result];
+        });
+        // Первое загруженное фото становится основным аватаром
+        if (!avatar) {
+          setAvatar(result);
+        }
       };
       reader.readAsDataURL(file);
     });
@@ -72,7 +84,7 @@ export default function CreatePersonalityPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: `Портрет ${avatarPrompt}, высокое качество, детализированная профессиональная фотография`,
+          prompt: `Portrait of ${avatarPrompt}, high quality, detailed professional photograph, clear face, expressive eyes`,
           aspectRatio: '1:1',
         }),
       });
@@ -80,7 +92,10 @@ export default function CreatePersonalityPage() {
       const data = await response.json();
       if (data.url) {
         setAvatar(data.url);
-        setUploadedFile(null);
+        // Добавляем в галерею
+        if (!avatarGallery.includes(data.url)) {
+          setAvatarGallery([data.url, ...avatarGallery]);
+        }
       }
     } catch (error) {
       console.error('Ошибка генерации аватара:', error);
@@ -133,13 +148,84 @@ export default function CreatePersonalityPage() {
         <div className="grid gap-4 md:gap-6 lg:grid-cols-2">
           {/* Avatar Section - Mobile Optimized */}
           <Card className="p-4 md:p-6">
-            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">Аватар</h2>
+            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4 flex items-center gap-2">
+              <ImageIcon className="h-5 w-5" />
+              Аватар и внешность
+            </h2>
             <div className="space-y-3 md:space-y-4">
+              
+              {/* Основной аватар */}
+              {avatar && (
+                <div className="relative aspect-square rounded-lg overflow-hidden border-4 border-purple-200 dark:border-purple-800">
+                  <img
+                    src={avatar}
+                    alt="Основной аватар"
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute top-2 right-2 flex gap-2">
+                    <Badge className="bg-purple-600 text-white">Основной</Badge>
+                    <Button
+                      size="icon"
+                      variant="destructive"
+                      onClick={() => {
+                        // Удаляем из галереи и выбираем следующий
+                        const newGallery = avatarGallery.filter(img => img !== avatar);
+                        setAvatarGallery(newGallery);
+                        setAvatar(newGallery[0] || '');
+                      }}
+                      className="h-8 w-8"
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Быстрая загрузка одного фото */}
               <div>
-                <Label htmlFor="avatarPrompt" className="text-sm md:text-base">Описание внешности</Label>
+                <Label className="text-sm md:text-base mb-2 block">
+                  Загрузить фото аватара
+                </Label>
+                <label
+                  htmlFor="singleUpload"
+                  className="flex flex-col items-center justify-center w-full h-24 md:h-32 border-2 border-dashed rounded-lg cursor-pointer hover:bg-accent/50 transition-colors"
+                >
+                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                    <Upload className="h-6 w-6 md:h-8 md:w-8 mb-2 text-purple-600" />
+                    <p className="text-xs md:text-sm text-muted-foreground">
+                      <span className="font-semibold">Нажмите для загрузки</span>
+                    </p>
+                    <p className="text-xs text-muted-foreground">PNG, JPG, WEBP</p>
+                  </div>
+                  <input
+                    id="singleUpload"
+                    type="file"
+                    className="hidden"
+                    accept="image/*"
+                    onChange={handleFileUpload}
+                  />
+                </label>
+              </div>
+
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-background px-2 text-muted-foreground">
+                    или
+                  </span>
+                </div>
+              </div>
+
+              {/* Генерация аватара через AI */}
+              <div>
+                <Label htmlFor="avatarPrompt" className="text-sm md:text-base">
+                  Описание внешности для генерации
+                </Label>
                 <Textarea
                   id="avatarPrompt"
-                  placeholder="например: аниме девушка с длинными фиолетовыми волосами, голубые глаза, в повседневной одежде"
+                  placeholder="например: anime girl with long purple hair, blue eyes, casual clothes"
                   value={avatarPrompt}
                   onChange={(e) => setAvatarPrompt(e.target.value)}
                   rows={3}
@@ -150,7 +236,7 @@ export default function CreatePersonalityPage() {
               <Button
                 onClick={handleGenerateAvatar}
                 disabled={!avatarPrompt.trim() || isGenerating}
-                className="w-full text-sm md:text-base"
+                className="w-full text-sm md:text-base bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
               >
                 {isGenerating ? (
                   <>
@@ -171,78 +257,72 @@ export default function CreatePersonalityPage() {
                 </div>
                 <div className="relative flex justify-center text-xs uppercase">
                   <span className="bg-background px-2 text-muted-foreground">
-                    или
+                    Дополнительно
                   </span>
                 </div>
               </div>
 
-              <div>
-                <Label htmlFor="fileUpload" className="text-sm md:text-base">Загрузить своё фото</Label>
-                <div className="mt-2">
-                  <label
-                    htmlFor="fileUpload"
-                    className="flex flex-col items-center justify-center w-full h-24 md:h-32 border-2 border-dashed rounded-lg cursor-pointer hover:bg-accent/50 transition-colors"
-                  >
-                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                      <Upload className="h-6 w-6 md:h-8 md:w-8 mb-2 text-muted-foreground" />
-                      <p className="text-xs md:text-sm text-muted-foreground">
-                        <span className="font-semibold">Нажмите для загрузки</span>
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        PNG, JPG, WEBP
-                      </p>
-                    </div>
-                    <input
-                      id="fileUpload"
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      onChange={handleFileUpload}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              {avatar && (
-                <div className="relative aspect-square rounded-lg overflow-hidden border-4 border-purple-200 dark:border-purple-800">
-                  <img
-                    src={avatar}
-                    alt="Сгенерированный аватар"
-                    className="w-full h-full object-cover"
-                  />
-                  <div className="absolute top-2 right-2">
-                    <Button
-                      size="icon"
-                      variant="destructive"
-                      onClick={() => {
-                        setAvatar('');
-                        setUploadedFile(null);
-                      }}
-                      className="h-8 w-8 md:h-10 md:w-10"
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {/* Multi-Photo Upload for 3D/Reference */}
+              {/* Multi-Photo Upload для точной генерации */}
               <div className="space-y-2">
-                <Label htmlFor="multiUpload" className="text-sm md:text-base">Загрузить несколько фото (для точного 3D-аватара)</Label>
-                <Input id="multiUpload" type="file" multiple accept="image/*" onChange={handleMultiUpload} className="text-sm md:text-base" />
+                <Label htmlFor="multiUpload" className="text-sm md:text-base">
+                  Загрузить несколько фото для точного 3D-аватара
+                </Label>
+                <p className="text-xs text-muted-foreground mb-2">
+                  Загрузите 3-5 фото с разных ракурсов для более точной генерации изображений персонажа
+                </p>
+                <Input 
+                  id="multiUpload" 
+                  type="file" 
+                  multiple 
+                  accept="image/*" 
+                  onChange={handleMultiUpload} 
+                  className="text-sm md:text-base" 
+                />
+                
+                {/* Галерея референсов */}
                 {avatarGallery.length > 0 && (
-                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mt-2">
-                    {avatarGallery.map((img, idx) => (
-                      <div key={idx} className="relative group">
-                        <img src={img} alt={`ref-${idx}`} className="w-full h-16 object-cover rounded-md border" />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors rounded-md flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                          <Button size="xs" variant="secondary" onClick={() => setAvatar(img)} className="text-[10px] h-6">Сделать основным</Button>
-                          <Button size="icon" variant="destructive" className="h-6 w-6" onClick={() => setAvatarGallery(prev => prev.filter((_, i) => i !== idx))}>
-                            <X className="h-3 w-3" />
-                          </Button>
+                  <div className="mt-3">
+                    <p className="text-sm font-medium mb-2">
+                      Референсные фото ({avatarGallery.length})
+                    </p>
+                    <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+                      {avatarGallery.map((img, idx) => (
+                        <div key={idx} className="relative group">
+                          <img 
+                            src={img} 
+                            alt={`ref-${idx}`} 
+                            className={`w-full h-16 object-cover rounded-md border-2 cursor-pointer transition-all ${
+                              img === avatar 
+                                ? 'border-purple-600 ring-2 ring-purple-600' 
+                                : 'border-gray-200 hover:border-purple-400'
+                            }`}
+                            onClick={() => setAvatar(img)}
+                          />
+                          {img === avatar && (
+                            <Badge className="absolute -top-1 -right-1 text-[8px] px-1 py-0 h-4 bg-purple-600">
+                              Основной
+                            </Badge>
+                          )}
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100">
+                            <Button 
+                              size="icon" 
+                              variant="destructive" 
+                              className="h-6 w-6" 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const newGallery = avatarGallery.filter((_, i) => i !== idx);
+                                setAvatarGallery(newGallery);
+                                if (img === avatar) {
+                                  setAvatar(newGallery[0] || '');
+                                }
+                              }}
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -251,7 +331,7 @@ export default function CreatePersonalityPage() {
 
           {/* Details Section - Mobile Optimized */}
           <Card className="p-4 md:p-6">
-            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">Детали</h2>
+            <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4">Детали личности</h2>
             <div className="space-y-3 md:space-y-4">
               <div>
                 <Label htmlFor="name" className="text-sm md:text-base">Имя *</Label>

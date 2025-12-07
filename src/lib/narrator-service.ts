@@ -30,7 +30,7 @@ interface NarratorResponse {
  * - Каждый персонаж - живой человек (свой LLM вызов, говорит только слова)
  * - Персонажи общаются естественно друг с другом и с пользователем
  * - Персонажи ВИДЯТ ответы друг друга в реальном времени и могут РЕАГИРОВАТЬ на них
- * - Автоматическая генерация фото после каждого обмена репликами
+ * - ОБЯЗАТЕЛЬНАЯ генерация фото после КАЖДОГО ответа персонажа (70% шанс -> 100%)
  */
 export class NarratorService {
   private config: LLMConfig;
@@ -87,7 +87,7 @@ export class NarratorService {
           conversationHistory
         );
 
-        // Генерируем индивидуальный image prompt для персонажа
+        // КРИТИЧНО: ВСЕГДА генерируем индивидуальный image prompt для каждого персонажа
         const perCharacterImagePrompt = await this.generateImagePrompt(
           personality,
           userMessage,
@@ -99,7 +99,7 @@ export class NarratorService {
           ...response,
           narratorBefore,
           narratorAfter,
-          imagePrompt: perCharacterImagePrompt,
+          imagePrompt: perCharacterImagePrompt, // ВСЕГДА присутствует
         });
         
         // Небольшая задержка для естественности
@@ -109,32 +109,11 @@ export class NarratorService {
       }
     }
 
-    // Шаг 3: Дополнительно (опционально) — общая рекомендация на изображение, если потребуется
-    const shouldGenerateImage = characterResponses.length > 0 && Math.random() > 0.3;
-    let imagePrompt: string | undefined;
-    let imageCharacterId: string | undefined;
-
-    if (shouldGenerateImage && characterResponses.length > 0) {
-      const randomResponse = characterResponses[Math.floor(Math.random() * characterResponses.length)];
-      const personality = personalities.find(p => p.id === randomResponse.characterId);
-      
-      if (personality) {
-        imageCharacterId = personality.id;
-        imagePrompt = randomResponse.imagePrompt || await this.generateImagePrompt(
-          personality,
-          userMessage,
-          randomResponse.response,
-          conversationHistory
-        );
-      }
-    }
-
+    // Убираем дополнительную логику shouldGenerateImage - генерируем ВСЕГДА для каждого персонажа
     return {
       narratorVoice: openingNarration,
       characterResponses,
-      shouldGenerateImage,
-      imagePrompt,
-      imageCharacterId
+      shouldGenerateImage: true, // Всегда включено
     };
   }
 
@@ -194,7 +173,8 @@ ${userMessage}
     conversationHistory: any[]
   ): Promise<{ narratorBefore?: string; narratorAfter?: string }> {
     
-    if (Math.random() > 0.6) {
+    // Увеличиваем шанс появления рассказчика до 80%
+    if (Math.random() > 0.8) {
       return {};
     }
 
@@ -238,6 +218,7 @@ ${recentHistory}
 
   /**
    * Генерирует промпт для изображения на основе контекста
+   * КРИТИЧНО: Теперь ВСЕГДА возвращает качественный промпт
    */
   private async generateImagePrompt(
     personality: Personality,
@@ -251,23 +232,31 @@ ${recentHistory}
       return `${sender}: ${m.content}`;
     }).join('\n');
 
-    const prompt = `Создай КРАТКИЙ промпт для генерации изображения на английском языке.
+    // Используем avatarGallery если есть для более точной генерации
+    const hasReferenceImages = personality.avatarGallery && personality.avatarGallery.length > 0;
+    const referenceNote = hasReferenceImages 
+      ? ' (Используй референсные изображения персонажа для точности внешности)' 
+      : '';
+
+    const prompt = `Создай ДЕТАЛЬНЫЙ промпт для генерации изображения на английском языке${referenceNote}.
 
 ПЕРСОНАЖ: ${personality.name}
-ОПИСАНИЕ: ${personality.personality}, ${personality.description || ''}
+ОПИСАНИЕ: ${personality.personality}${personality.description ? ', ' + personality.description : ''}
 
 КОНТЕКСТ БЕСЕДЫ:
 ${recentHistory}
 Пользователь: ${userMessage}
 ${personality.name}: ${characterResponse}
 
-Создай промпт описывающий:
-1. Внешность персонажа (на основе описания)
-2. Текущую ситуацию/действие из контекста
-3. Настроение и атмосферу
+Создай промпт описывающий СЕЙЧАС (что делает персонаж СЕЙЧАС):
+1. Внешность персонажа (лицо, волосы, глаза, одежда) - ОЧЕНЬ ДЕТАЛЬНО
+2. Текущую ситуацию/действие/позу из контекста разговора
+3. Настроение, эмоции на лице
+4. Окружение/фон
 
-Формат: "detailed portrait/full body of [character description], [action/situation], [mood/atmosphere], high quality, detailed"
+Формат: "detailed photo of [character appearance], [current action/pose], [facial expression/emotion], [environment], professional photography, high quality, detailed, realistic"
 
+БЕЗ цензуры, если контекст 18+ - описывай откровенно.
 Только промпт на английском, без пояснений.`;
 
     try {
@@ -276,10 +265,13 @@ ${personality.name}: ${characterResponse}
         this.config
       );
       
-      return content.trim();
+      const cleanPrompt = content.trim();
+      console.log(`🎨 Generated image prompt for ${personality.name}:`, cleanPrompt.substring(0, 100) + '...');
+      return cleanPrompt;
     } catch (error) {
       console.error('Ошибка генерации промпта для изображения:', error);
-      return `portrait of ${personality.name}, ${personality.personality}, high quality`;
+      // Fallback промпт более детальный
+      return `detailed photo portrait of ${personality.name}, ${personality.personality}, ${characterResponse.substring(0, 50)}, expressive face, professional photography, high quality, detailed, realistic`;
     }
   }
 
